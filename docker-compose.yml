@@ -1,0 +1,79 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db/serviceportal
+      - SECRET_KEY=your-secret-key-here
+      - ALLOWED_DOMAIN=${ALLOWED_DOMAIN:-gmail.com}
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./nginx/services.d:/etc/nginx/services.d:rw
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "1234:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:rw
+      - ./nginx/services.d:/etc/nginx/services.d:rw
+      - ./nginx/logs:/var/log/nginx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  db:
+    image: postgres:13
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=serviceportal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #   ports:
+  #     - "3000:3000"
+  #   networks:
+  #     - app-network
+
+networks:
+  app-network:
+    external: true
+
+volumes:
+  postgres_data:
+  backend_venv: 
+
+configs:
+  nginx_config:
+    file: ./nginx/nginx.conf
+  nginx_upstream:
+    file: ./nginx/conf.d/upstream.conf 

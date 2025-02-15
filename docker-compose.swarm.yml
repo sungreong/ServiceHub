@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    deploy:
+      replicas: 3  # 백엔드 서비스 복제본 수
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db/serviceportal
+      - SECRET_KEY=your-secret-key-here
+      - SERVICE_NAME={{.Service.Name}}-{{.Task.Slot}}  # 각 복제본의 고유 이름
+    volumes:
+      - ./backend:/app  # 백엔드 소스코드 볼륨 마운트
+      - backend_venv:/app/.venv  # Python 가상환경을 위한 볼륨
+      - /var/run/docker.sock:/var/run/docker.sock  # docker 소켓 마운트
+      - ./nginx/services.d:/etc/nginx/services.d:rw  # 서비스 설정 디렉토리
+    # depends_on:
+      # db:
+      #   condition: service_healthy
+    networks:
+      - app-network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload  # 개발을 위한 hot-reload 활성화
+
+  nginx:
+    image: nginx:latest
+    # container_name: nginx
+    ports:
+      - "1234:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:rw
+      - ./nginx/services.d:/etc/nginx/services.d:rw
+      - ./nginx/logs:/var/log/nginx  # 로그 볼륨 추가
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # 이 설정이 필요합니다
+    # depends_on:
+    #   - backend
+    networks:
+      - app-network
+    configs:
+      - source: nginx_config
+      - source: nginx_upstream
+    deploy:
+      replicas: 2  # nginx 복제본 수
+      update_config:
+        parallelism: 1
+        delay: 10s
+
+  db:
+    image: postgres:13
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=serviceportal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"  # 로컬 개발을 위해 포트 노출
+    networks:
+      - app-network
+    deploy:
+      replicas: 1  # 데이터베이스는 단일 인스턴스 유지
+
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   volumes:
+  #     - ./frontend:/app
+  #     - /app/node_modules
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NODE_ENV=development
+  #   depends_on:
+  #     - backend
+
+networks:
+  app-network:
+    driver: overlay
+    attachable: true
+
+volumes:
+  postgres_data:
+  backend_venv:  # Python 가상환경을 위한 볼륨 
+
+configs:
+  nginx_config:
+    file: ./nginx/nginx.conf
+  nginx_upstream:
+    file: ./nginx/conf.d/upstream.conf 
