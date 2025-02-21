@@ -206,28 +206,28 @@ def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
 
 
 # API 서비스 목록 조회
-@app.get("/services", response_model=List[schemas.Service])
-def get_services(db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_user)):
-    try:
-        # 관리자는 모든 서비스를 볼 수 있음
-        if current_user.is_admin:
-            services = db.query(models.Service).all()
-        else:
-            # 일반 사용자는 승인된 서비스만 볼 수 있음
-            services = (
-                db.query(models.Service)
-                .join(models.user_services)
-                .filter(models.user_services.c.user_id == current_user.id)
-                .all()
-            )
+# @app.get("/services", response_model=List[schemas.Service])
+# def get_services(db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_user)):
+#     try:
+#         # 관리자는 모든 서비스를 볼 수 있음
+#         if current_user.is_admin:
+#             services = db.query(models.Service).all()
+#         else:
+#             # 일반 사용자는 승인된 서비스만 볼 수 있음
+#             services = (
+#                 db.query(models.Service)
+#                 .join(models.user_services)
+#                 .filter(models.user_services.c.user_id == current_user.id)
+#                 .all()
+#             )
 
-        # nginx_url 추가
-        for service in services:
-            setattr(service, "nginx_url", f"/api/{service.id}/")
+#         # nginx_url 추가
+#         for service in services:
+#             setattr(service, "nginx_url", f"/api/{service.id}/")
 
-        return services
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
+#         return services
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
 
 
 # Auth 엔드포인트 수정
@@ -297,12 +297,6 @@ async def verify_token(authorization: Optional[str] = Header(None), db: Session 
     print(f"[DEBUG] Received authorization header: {authorization}")
 
     if not authorization:
-        # 토큰이 없으면 기본 관리자 토큰 생성
-        admin_user = db.query(models.User).filter(models.User.email == f"admin@{ALLOWED_DOMAIN}").first()
-        if admin_user:
-            token = auth.create_access_token(data={"sub": admin_user.email})
-            return {"status": "ok", "token": token, "user": admin_user.email, "is_admin": admin_user.is_admin}
-
         raise HTTPException(status_code=401, detail="No authorization token provided")
 
     try:
@@ -312,23 +306,25 @@ async def verify_token(authorization: Optional[str] = Header(None), db: Session 
         else:
             token = authorization
 
+        # 토큰 디코딩
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         user_email = payload.get("sub")
+        print(user_email)
+        if not user_email:
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-        # 사용자 확인
+        # DB에서 사용자 조회
         user = db.query(models.User).filter(models.User.email == user_email).first()
+        print(user)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-
+        print(user.is_admin)
+        # 실제 DB의 admin 상태 반환
         return {"status": "ok", "token": token, "user": user_email, "is_admin": user.is_admin}
 
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
     except Exception as e:
-        # 토큰이 유효하지 않으면 새 토큰 생성
-        admin_user = db.query(models.User).filter(models.User.email == f"admin@{ALLOWED_DOMAIN}").first()
-        if admin_user:
-            new_token = auth.create_access_token(data={"sub": admin_user.email})
-            return {"status": "ok", "token": new_token, "user": admin_user.email, "is_admin": admin_user.is_admin}
-
         raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
 
 

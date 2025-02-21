@@ -771,7 +771,7 @@ async def get_user_allowed_services(
     return services
 
 
-@services_router.get("/services", response_model=List[schemas.Service])
+@services_router.get("", response_model=List[schemas.Service])
 async def get_services(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     """서비스 목록을 반환합니다."""
     try:
@@ -1066,3 +1066,43 @@ async def get_pending_requests_count(
         return {"count": count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@services_router.delete("/{service_id}")
+async def delete_service(
+    service_id: str, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """서비스를 삭제합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    try:
+        # 서비스 조회
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="Service not found")
+
+        # 관련된 모든 데이터 삭제
+        # 1. 서비스 요청 삭제
+        db.query(models.ServiceRequest).filter(models.ServiceRequest.service_id == service_id).delete()
+
+        # 2. 서비스 상태 이력 삭제
+        db.query(models.ServiceStatus).filter(models.ServiceStatus.service_id == service_id).delete()
+
+        # 3. user_services 관계 삭제
+        db.execute(models.user_services.delete().where(models.user_services.c.service_id == service_id))
+
+        # 4. user_allowed_services 관계 삭제
+        db.execute(
+            models.user_allowed_services.delete().where(models.user_allowed_services.c.service_id == service_id)
+        )
+
+        # 5. 서비스 삭제
+        db.delete(service)
+        db.commit()
+
+        return {"status": "success", "message": "Service and related data deleted successfully"}
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"서비스 삭제 중 오류가 발생했습니다: {str(e)}")
