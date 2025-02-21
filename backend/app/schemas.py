@@ -11,12 +11,34 @@ class ServiceBase(BaseModel):
     description: Optional[str] = None
 
 
-class ServiceCreate(ServiceBase):
-    pass
+class ServiceCreate(BaseModel):
+    name: str
+    ip: str
+    port: int
+    description: Optional[str] = None
+    show_info: Optional[bool] = False
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Test Service",
+                "ip": "192.168.1.100",
+                "port": 8080,
+                "description": "테스트 서비스입니다.",
+            }
+        }
 
 
-class Service(BaseModel):
-    id: int
+class ServiceInDB(ServiceCreate):
+    id: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class Service(ServiceBase):
+    id: str
     name: str
     ip: str
     port: int
@@ -25,6 +47,16 @@ class Service(BaseModel):
 
     class Config:
         orm_mode = True
+        schema_extra = {
+            "example": {
+                "id": "a1b2c3d4",
+                "name": "Test Service",
+                "ip": "192.168.1.100",
+                "port": 8080,
+                "description": "테스트 서비스입니다.",
+                "show_info": False,
+            }
+        }
 
 
 class ServiceWithAccess(Service):
@@ -49,7 +81,7 @@ class UserUpdate(BaseModel):
 
 # ServiceRequest 관련 스키마
 class ServiceRequestBase(BaseModel):
-    service_id: int
+    service_id: str
 
 
 class ServiceRequestCreate(ServiceRequestBase):
@@ -94,3 +126,22 @@ class ServiceRequestWithDetails(ServiceRequest):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class ServiceIdsRequest(BaseModel):
+    service_ids: List[str]
+
+
+# 서비스 생성 응답을 위한 새로운 스키마 추가
+class ServiceCreateResponse(BaseModel):
+    id: str
+    name: str
+    ip: str
+    port: int
+    description: Optional[str] = None
+    show_info: bool = False
+    nginxUpdated: bool
+    nginx_url: str
+
+    class Config:
+        orm_mode = True

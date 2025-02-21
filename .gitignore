@@ -45,3 +45,5 @@ ehthumbs.db
 Icon? 
 
 .cursorrules
+
+nginx/services.d/service_*.conf

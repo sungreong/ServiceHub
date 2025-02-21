@@ -14,8 +14,14 @@ from .models import user_services  # user_services 테이블 import
 import json
 import socket
 import os
+from .auth import SECRET_KEY, ALGORITHM
+from .services import services_router
+
+# 환경변수에서 도메인 가져오기 (기본값 gmail.com)
+ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "gmail.com")
 
 app = FastAPI()
+app.include_router(services_router)
 
 # CORS 미들웨어 설정
 app.add_middleware(
@@ -38,8 +44,8 @@ def get_db():
 
 
 # 데이터베이스 테이블 재생성 (기존 데이터 삭제됨)
-# models.Base.metadata.drop_all(bind=engine)  # 기존 테이블 삭제
-# models.Base.metadata.create_all(bind=engine)  # 새로운 스키마로 테이블 생성
+models.Base.metadata.drop_all(bind=engine)  # 기존 테이블 삭제
+models.Base.metadata.create_all(bind=engine)  # 새로운 스키마로 테이블 생성
 
 
 # 초기 관리자 계정 생성
@@ -130,10 +136,6 @@ async def startup_event():
     create_test_data()  # 테스트 데이터 생성
 
 
-# 환경변수에서 도메인 가져오기 (기본값 gmail.com)
-ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "gmail.com")
-
-
 # 회원가입
 @app.post("/register", response_model=schemas.User)
 async def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
@@ -192,27 +194,38 @@ def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
 
 
 # API 서비스 등록 (Admin only)
-@app.post("/services", response_model=schemas.Service)
-def create_service(
-    service: schemas.ServiceCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-    return auth.create_service(db, service)
+# @app.post("/services", response_model=schemas.Service)
+# def create_service(
+#     service: schemas.ServiceCreate,
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(auth.get_current_user),
+# ):
+#     if not current_user.is_admin:
+#         raise HTTPException(status_code=403, detail="Admin only")
+#     return auth.create_service(db, service)
 
 
 # API 서비스 목록 조회
 @app.get("/services", response_model=List[schemas.Service])
 def get_services(db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_user)):
     try:
-        services = auth.get_services(db)
+        # 관리자는 모든 서비스를 볼 수 있음
+        if current_user.is_admin:
+            services = db.query(models.Service).all()
+        else:
+            # 일반 사용자는 승인된 서비스만 볼 수 있음
+            services = (
+                db.query(models.Service)
+                .join(models.user_services)
+                .filter(models.user_services.c.user_id == current_user.id)
+                .all()
+            )
+
+        # nginx_url 추가
         for service in services:
             setattr(service, "nginx_url", f"/api/{service.id}/")
+
         return services
-    except HTTPException as e:
-        raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
 
@@ -317,51 +330,6 @@ async def verify_token(authorization: Optional[str] = Header(None), db: Session 
             return {"status": "ok", "token": new_token, "user": admin_user.email, "is_admin": admin_user.is_admin}
 
         raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
-
-
-# 서비스 접근 요청 처리를 수정
-@app.post("/service-requests", response_model=schemas.ServiceRequest)
-async def create_service_request(
-    request: schemas.ServiceRequestCreate,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    # 이미 승인된 요청이 있는지 확인
-    existing_approved = (
-        db.query(models.ServiceRequest)
-        .filter(
-            models.ServiceRequest.user_id == current_user.id,
-            models.ServiceRequest.service_id == request.service_id,
-            models.ServiceRequest.status == RequestStatus.APPROVED,
-        )
-        .first()
-    )
-
-    if existing_approved:
-        raise HTTPException(status_code=400, detail="이미 승인된 서비스입니다.")
-
-    # 대기 중인 요청이 있는지 확인
-    existing_pending = (
-        db.query(models.ServiceRequest)
-        .filter(
-            models.ServiceRequest.user_id == current_user.id,
-            models.ServiceRequest.service_id == request.service_id,
-            models.ServiceRequest.status == RequestStatus.PENDING,
-        )
-        .first()
-    )
-
-    if existing_pending:
-        raise HTTPException(status_code=400, detail="이미 요청된 서비스입니다.")
-
-    # 새 요청 생성
-    db_request = models.ServiceRequest(
-        user_id=current_user.id, service_id=request.service_id, status=RequestStatus.PENDING
-    )
-    db.add(db_request)
-    db.commit()
-    db.refresh(db_request)
-    return db_request
 
 
 # 관리자용: 서비스 요청 목록 조회 (사용자 정보 포함)
@@ -490,22 +458,31 @@ async def get_my_service_requests(
 async def get_available_services(
     current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
 ):
+    """현재 사용자가 요청할 수 있는 서비스 목록을 반환합니다."""
     # 관리자는 모든 서비스에 접근 가능
     if current_user.is_admin:
         return db.query(models.Service).all()
 
-    # 현재 사용자의 승인된 서비스와 대기 중인 요청의 서비스 ID 목록
+    # 1. 이미 요청했거나 승인된 서비스 ID 목록
     existing_requests = (
         db.query(models.ServiceRequest.service_id)
         .filter(
             models.ServiceRequest.user_id == current_user.id,
-            models.ServiceRequest.status.in_([RequestStatus.APPROVED, RequestStatus.PENDING]),
+            models.ServiceRequest.status.in_([RequestStatus.PENDING, RequestStatus.APPROVED]),
         )
         .subquery()
     )
 
-    # 아직 요청하지 않은 서비스 목록 반환
-    available_services = db.query(models.Service).filter(~models.Service.id.in_(existing_requests)).all()
+    # 2. 관리자가 허용한 서비스 중에서 아직 요청하지 않은 서비스만 반환
+    available_services = (
+        db.query(models.Service)
+        .join(models.user_allowed_services)
+        .filter(
+            models.user_allowed_services.c.user_id == current_user.id,  # 관리자가 허용한 서비스만
+            ~models.Service.id.in_(existing_requests),  # 아직 요청하지 않은 것만
+        )
+        .all()
+    )
 
     return available_services
 
@@ -668,264 +645,6 @@ async def delete_multiple_users(
     return {"status": "success", "message": f"{len(user_ids)} users and their related data deleted successfully"}
 
 
-# 서비스에 사용자 추가를 위한 요청 모델
-class ServiceUserAdd(BaseModel):
-    emails: str  # 쉼표로 구분된 이메일 목록
-    showInfo: bool = False  # IP:PORT 정보 공개 여부
-
-
-# 서비스에 사용자 추가
-@app.post("/services/{service_id}/users")
-async def add_users_to_service(
-    service_id: int,
-    user_data: ServiceUserAdd,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    service = db.query(models.Service).filter(models.Service.id == service_id).first()
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-
-    email_list = [email.strip() for email in user_data.emails.split(",")]
-    results = {"success": [], "not_found": [], "already_added": []}
-
-    for email in email_list:
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if not user:
-            results["not_found"].append(email)
-            continue
-
-        # 현재 서비스에 대한 사용자 연결 확인
-        existing_connection = (
-            db.query(user_services)
-            .filter(user_services.c.service_id == service_id, user_services.c.user_id == user.id)
-            .first()
-        )
-
-        if existing_connection:
-            results["already_added"].append(email)
-            continue
-
-        # 새로운 서비스-사용자 연결 추가
-        stmt = user_services.insert().values(service_id=service_id, user_id=user.id, show_info=user_data.showInfo)
-        db.execute(stmt)
-
-        # 서비스 요청 자동 승인 처리
-        new_request = models.ServiceRequest(
-            user_id=user.id,
-            service_id=service_id,
-            status=RequestStatus.APPROVED,
-            request_date=datetime.utcnow(),
-            response_date=datetime.utcnow(),
-            admin_created=True,
-        )
-        db.add(new_request)
-        results["success"].append(email)
-
-    db.commit()
-    return results
-
-
-# 사용자 추가 전 검증을 위한 엔드포인트
-@app.post("/services/{service_id}/users/validate")
-async def validate_service_users(
-    service_id: int,
-    user_data: ServiceUserAdd,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    service = db.query(models.Service).filter(models.Service.id == service_id).first()
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-
-    # 이메일 목록 파싱 및 중복 제거
-    email_list = list(set([email.strip() for email in user_data.emails.split(",")]))
-    results = {"valid_users": [], "not_found": [], "already_added": []}
-
-    for email in email_list:
-        if not email.endswith(f"@{ALLOWED_DOMAIN}"):
-            results["not_found"].append({"email": email, "reason": "올바른 도메인이 아닙니다."})
-            continue
-
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if not user:
-            results["not_found"].append({"email": email, "reason": "등록되지 않은 사용자입니다."})
-            continue
-
-        if service in user.services:
-            results["already_added"].append({"email": email, "user_id": user.id})
-            continue
-
-        results["valid_users"].append({"email": email, "user_id": user.id})
-
-    return results
-
-
-# 서비스별 사용자 목록 조회 수정
-@app.get("/services/{service_id}/users", response_model=List[schemas.User])
-async def get_service_users(
-    service_id: int,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    service = db.query(models.Service).filter(models.Service.id == service_id).first()
-    if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
-
-    # 서비스에 연결된 사용자 목록 반환
-    return service.users
-
-
-# 서비스에 추가 가능한 사용자 목록 조회 API 수정
-@app.get("/services/{service_id}/available-users", response_model=List[schemas.User])
-async def get_available_users(
-    service_id: int,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    # 현재 서비스에 이미 추가된 사용자 ID 목록
-    existing_user_ids = db.query(user_services.c.user_id).filter(user_services.c.service_id == service_id).subquery()
-
-    # 아직 추가되지 않은 모든 사용자 목록 반환 (관리자 포함)
-    available_users = (
-        db.query(models.User)
-        .filter(~models.User.id.in_(existing_user_ids))  # 관리자 필터링 제거
-        .order_by(models.User.is_admin.desc(), models.User.email)  # 관리자가 먼저 나오도록 정렬
-        .all()
-    )
-
-    return available_users
-
-
-# 서비스 사용자별 정보 공개 설정
-@app.put("/services/{service_id}/users/{user_id}")
-async def update_service_user_visibility(
-    service_id: int,
-    user_id: int,
-    show_info: bool,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    # user_services 테이블에서 해당 레코드 찾기
-    stmt = (
-        user_services.update()
-        .where(and_(user_services.c.service_id == service_id, user_services.c.user_id == user_id))
-        .values(show_info=show_info)
-    )
-
-    db.execute(stmt)
-    db.commit()
-
-    return {"status": "success", "message": "User service visibility updated"}
-
-
-# 서비스 사용자 삭제
-@app.delete("/services/{service_id}/users/{user_id}")
-async def delete_service_user(
-    service_id: int,
-    user_id: int,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    try:
-        # 1. user_services 테이블에서 해당 레코드 삭제
-        stmt = user_services.delete().where(
-            and_(user_services.c.service_id == service_id, user_services.c.user_id == user_id)
-        )
-        result = db.execute(stmt)
-
-        # 2. ServiceRequest 테이블에서 관련 요청 삭제
-        db.query(models.ServiceRequest).filter(
-            models.ServiceRequest.service_id == service_id, models.ServiceRequest.user_id == user_id
-        ).delete()
-
-        db.commit()
-
-        if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="User service not found")
-
-        return {"status": "success", "message": "User removed from service"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# 서비스 일괄 추가를 위한 스키마
-class BulkServiceCreate(BaseModel):
-    services: List[schemas.ServiceCreate]
-
-
-# JSON 파일을 통한 서비스 일괄 추가
-@app.post("/services/upload", response_model=dict)
-async def upload_services(
-    file: UploadFile = File(...),
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    try:
-        content = await file.read()
-        services_data = json.loads(content)
-
-        results = {"success": [], "failed": []}
-
-        for service_data in services_data:
-            try:
-                service = schemas.ServiceCreate(**service_data)
-                created_service = auth.create_service(db, service)
-                results["success"].append({"name": service.name, "id": created_service.id})
-            except Exception as e:
-                results["failed"].append({"name": service_data.get("name", "Unknown"), "error": str(e)})
-
-        return results
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON format")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# 여러 서비스 동시 추가
-@app.post("/services/bulk", response_model=dict)
-async def create_services_bulk(
-    services: BulkServiceCreate,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    results = {"success": [], "failed": []}
-
-    for service in services.services:
-        try:
-            created_service = auth.create_service(db, service)
-            results["success"].append({"name": service.name, "id": created_service.id})
-        except Exception as e:
-            results["failed"].append({"name": service.name, "error": str(e)})
-
-    return results
-
-
 # 사용자 일괄 추가를 위한 스키마
 class BulkUserCreate(BaseModel):
     users: List[schemas.UserCreate]
@@ -1000,49 +719,6 @@ async def create_users_bulk(
     return results
 
 
-@app.get("/services/status", response_model=dict)
-async def get_services_status(
-    current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
-):
-    try:
-        # 모든 서비스의 상태를 확인
-        services_status = {}
-        services = db.query(models.Service).all()
-
-        for service in services:
-            # 관리자는 항상 접근 가능
-            if current_user.is_admin:
-                status = "available"
-            else:
-                # 일반 사용자는 승인된 요청이 있는지 확인
-                request = (
-                    db.query(models.ServiceRequest)
-                    .filter(
-                        models.ServiceRequest.user_id == current_user.id,
-                        models.ServiceRequest.service_id == service.id,
-                        models.ServiceRequest.status == RequestStatus.APPROVED,
-                    )
-                    .first()
-                )
-                status = "available" if request else "unavailable"
-
-            # 서비스 연결 상태 확인 (실제 서비스 연결 확인 로직 추가 필요)
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)  # 1초 타임아웃
-                result = sock.connect_ex((service.ip, service.port))
-                is_running = result == 0
-                sock.close()
-            except:
-                is_running = False
-
-            services_status[service.id] = {"access": status, "running": "online" if is_running else "offline"}
-
-        return services_status
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # 승인 대기 중인 사용자 목록 조회
 @app.get("/users/pending", response_model=List[schemas.User])
 async def get_pending_users(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
@@ -1073,3 +749,121 @@ async def update_user_status(
 
     db.commit()
     return {"status": "success"}
+
+
+# 사용자별 허용된 서비스 목록 조회
+@app.get("/users/{user_id}/allowed-services", response_model=List[schemas.Service])
+async def get_user_allowed_services(
+    user_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """특정 사용자에게 허용된 서비스 목록을 반환합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    services = (
+        db.query(models.Service)
+        .join(models.user_allowed_services)
+        .filter(models.user_allowed_services.c.user_id == user_id)
+        .all()
+    )
+
+    return services
+
+
+# 사용자에게 서비스 요청 권한 부여
+@app.post("/users/{user_id}/allow-services")
+async def allow_services_for_user(
+    user_id: int,
+    request: schemas.ServiceIdsRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """특정 사용자에게 여러 서비스의 요청 권한을 부여합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    results = {"success": [], "already_allowed": [], "not_found": []}
+
+    # 기존 허용된 서비스 모두 제거
+    stmt = models.user_allowed_services.delete().where(models.user_allowed_services.c.user_id == user_id)
+    db.execute(stmt)
+
+    # 새로운 서비스 권한 추가
+    for service_id in request.service_ids:
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            results["not_found"].append(service_id)
+            continue
+
+        # 새로운 허용 추가
+        stmt = models.user_allowed_services.insert().values(user_id=user_id, service_id=service_id)
+        db.execute(stmt)
+        results["success"].append(service.name)
+
+    db.commit()
+    return results
+
+
+# 사용자별 서비스 권한 관리
+@app.post("/users/{user_id}/service-permissions")
+async def update_user_service_permissions(
+    user_id: int,
+    request: schemas.ServiceIdsRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """특정 사용자의 서비스 권한을 업데이트합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 현재 허용된 서비스 ID 목록 조회
+    current_permissions = (
+        db.query(models.user_allowed_services.c.service_id)
+        .filter(models.user_allowed_services.c.user_id == user_id)
+        .all()
+    )
+    current_service_ids = {service_id for (service_id,) in current_permissions}
+    new_service_ids = set(request.service_ids)
+
+    # 제거할 서비스 권한
+    to_remove = current_service_ids - new_service_ids
+    # 추가할 서비스 권한
+    to_add = new_service_ids - current_service_ids
+
+    results = {"added": [], "removed": [], "not_found": []}
+
+    # 권한 제거
+    if to_remove:
+        stmt = models.user_allowed_services.delete().where(
+            and_(
+                models.user_allowed_services.c.user_id == user_id,
+                models.user_allowed_services.c.service_id.in_(to_remove),
+            )
+        )
+        db.execute(stmt)
+        removed_services = db.query(models.Service).filter(models.Service.id.in_(to_remove)).all()
+        results["removed"] = [service.name for service in removed_services]
+
+    # 권한 추가
+    for service_id in to_add:
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            results["not_found"].append(service_id)
+            continue
+
+        stmt = models.user_allowed_services.insert().values(user_id=user_id, service_id=service_id)
+        db.execute(stmt)
+        results["added"].append(service.name)
+
+    db.commit()
+    return results

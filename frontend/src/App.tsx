@@ -11,6 +11,7 @@ import PendingRequests from './components/PendingRequests';
 import ServiceUsers from './components/ServiceUsers';
 import BulkServiceAdd from './components/BulkServiceAdd';
 import BulkUserAdd from './components/BulkUserAdd';
+import ServiceUserManagement from './components/ServiceUserManagement';
 import './App.css';
 
 interface PrivateRouteProps {
@@ -93,6 +94,14 @@ const App = () => {
                     element={
                         <PrivateRoute>
                             <BulkUserAdd />
+                        </PrivateRoute>
+                    }
+                />
+                <Route
+                    path="/service-user-management"
+                    element={
+                        <PrivateRoute>
+                            <ServiceUserManagement />
                         </PrivateRoute>
                     }
                 />

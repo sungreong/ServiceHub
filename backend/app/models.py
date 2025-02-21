@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Enum, DateTime
+from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, Table, Enum, DateTime, Float
 from sqlalchemy.orm import relationship
 from .database import Base
 import enum
@@ -9,8 +9,16 @@ user_services = Table(
     "user_services",
     Base.metadata,
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-    Column("service_id", Integer, ForeignKey("services.id", ondelete="CASCADE"), primary_key=True),
+    Column("service_id", String(8), ForeignKey("services.id", ondelete="CASCADE"), primary_key=True),
     Column("show_info", Boolean, default=False),
+)
+
+# 사용자별 요청 가능한 서비스 테이블
+user_allowed_services = Table(
+    "user_allowed_services",
+    Base.metadata,
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("service_id", String(8), ForeignKey("services.id", ondelete="CASCADE"), primary_key=True),
 )
 
 
@@ -44,20 +52,27 @@ class User(Base):
     services = relationship("Service", secondary=user_services, back_populates="users")
     service_requests = relationship("ServiceRequest", back_populates="user")
 
+    # 관계 추가
+    allowed_services = relationship("Service", secondary=user_allowed_services, back_populates="allowed_users")
+
 
 class Service(Base):
     __tablename__ = "services"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
-    ip = Column(String)
-    port = Column(Integer)
+    id = Column(String(8), primary_key=True)
+    name = Column(String, nullable=False)
+    ip = Column(String, nullable=False)
+    port = Column(Integer, nullable=False)
     description = Column(String, nullable=True)
-    show_info = Column(Boolean, default=False)  # 서비스 정보(IP:PORT) 공개 여부
+    created_at = Column(DateTime, default=datetime.utcnow)
+    show_info = Column(Boolean, default=False)
 
     # users 관계 추가
     users = relationship("User", secondary=user_services, back_populates="services")
     requests = relationship("ServiceRequest", back_populates="service")
+
+    # 관계 추가
+    allowed_users = relationship("User", secondary=user_allowed_services, back_populates="allowed_services")
 
 
 class ServiceRequest(Base):
@@ -65,7 +80,7 @@ class ServiceRequest(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    service_id = Column(Integer, ForeignKey("services.id"))
+    service_id = Column(String(8), ForeignKey("services.id"))
     status = Column(Enum(RequestStatus), default=RequestStatus.PENDING)
     request_date = Column(DateTime, default=datetime.utcnow)
     response_date = Column(DateTime, nullable=True)
@@ -74,3 +89,16 @@ class ServiceRequest(Base):
 
     user = relationship("User", back_populates="service_requests")
     service = relationship("Service", back_populates="requests")
+
+
+class ServiceStatus(Base):
+    __tablename__ = "service_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+    service_id = Column(String(8), ForeignKey("services.id"))
+    check_time = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, nullable=False)
+    response_time = Column(Float, nullable=True)
+    error_message = Column(String, nullable=True)
+    details = Column(String, nullable=True)
+    retry_count = Column(Integer, default=0)

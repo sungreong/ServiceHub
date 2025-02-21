@@ -11,6 +11,8 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
     const location = useLocation();
     const navigate = useNavigate();
     const [user, setUser] = useState<User | null>(null);
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [pendingCount, setPendingCount] = useState(0);
 
     useEffect(() => {
         const checkToken = async () => {
@@ -26,6 +28,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                     email: response.data.user,
                     is_admin: response.data.is_admin || false
                 });
+                setIsAdmin(response.data.is_admin);
             } catch (err) {
                 console.error('Token verification failed:', err);
                 localStorage.removeItem('token');
@@ -34,11 +37,25 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         };
 
         checkToken();
+        fetchPendingCount();
+
+        // 30초마다 대기 요청 수 업데이트
+        const interval = setInterval(fetchPendingCount, 30000);
+        return () => clearInterval(interval);
     }, [navigate]);
 
     const handleLogout = () => {
         localStorage.removeItem('token');
         navigate('/login');
+    };
+
+    const fetchPendingCount = async () => {
+        try {
+            const response = await axios.get('/services/pending-requests/count');
+            setPendingCount(response.data.count);
+        } catch (err) {
+            console.error('Failed to fetch pending requests count:', err);
+        }
     };
 
     // 사용자 유형에 따른 메뉴 아이템 설정
@@ -51,13 +68,24 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 { path: '/service-requests', label: '서비스 요청 관리', icon: '📨' },
                 { path: '/services/add', label: '서비스 추가', icon: '➕' },
                 { path: '/services/bulk-add', label: '서비스 일괄 추가', icon: '📥' },
-                { path: '/pending-requests', label: '승인 대기 요청', icon: '⏳' },
+                { 
+                    path: '/pending-requests', 
+                    label: `승인 대기 요청${pendingCount > 0 ? ` (${pendingCount})` : ''}`, 
+                    icon: '⏳',
+                    hasBadge: true 
+                },
                 { path: '/service-users', label: '서비스별 사용자', icon: '👥' },
+                { path: '/service-user-management', label: '서비스 사용자 관리', icon: '👥' },
             ];
         }
         return [
             { path: '/dashboard', label: '서비스 목록', icon: '📋' },
-            { path: '/service-requests', label: '서비스 요청', icon: '📨' },
+            { 
+                path: '/service-requests', 
+                label: `서비스 요청${pendingCount > 0 ? ` (${pendingCount})` : ''}`, 
+                icon: '📨',
+                hasBadge: true 
+            },
         ];
     };
 
@@ -73,11 +101,20 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                         <Link
                             key={item.path}
                             to={item.path}
-                            className={`flex items-center px-4 py-3 text-gray-700 hover:bg-gray-100 
+                            className={`flex items-center justify-between px-4 py-3 text-gray-700 hover:bg-gray-100 
                                 ${location.pathname === item.path ? 'bg-blue-50 text-blue-600' : ''}`}
                         >
-                            <span className="mr-3">{item.icon}</span>
-                            {item.label}
+                            <div className="flex items-center">
+                                <span className="mr-3">{item.icon}</span>
+                                <span>{item.label}</span>
+                            </div>
+                            {item.hasBadge && pendingCount > 0 && (
+                                <span className={`px-2 py-1 text-xs rounded-full ${
+                                    user?.is_admin ? 'bg-red-500' : 'bg-blue-500'
+                                } text-white`}>
+                                    {pendingCount}
+                                </span>
+                            )}
                         </Link>
                     ))}
                 </nav>

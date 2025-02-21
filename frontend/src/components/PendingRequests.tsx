@@ -97,10 +97,13 @@ const PendingRequests: React.FC = () => {
 
     const handleRequestUpdate = async (requestId: number, status: string) => {
         try {
-            await axios.put(`/service-requests/${requestId}`, { status });
+            // status에 따라 다른 엔드포인트 호출
+            const endpoint = status === 'APPROVED' ? 'approve' : 'reject';
+            await axios.put(`/services/service-requests/${requestId}/${endpoint}`);
+            
             setMessage({
                 type: 'success',
-                text: `요청이 ${status === 'approved' ? '승인' : '거절'}되었습니다.`
+                text: `요청이 ${status === 'APPROVED' ? '승인' : '거절'}되었습니다.`
             });
             refreshData(); // 즉시 새로고침
         } catch (err: any) {
@@ -116,7 +119,7 @@ const PendingRequests: React.FC = () => {
         try {
             await Promise.all(
                 selectedRequests.map(requestId =>
-                    axios.put(`/service-requests/${requestId}`, { status })
+                    axios.put(`/services/service-requests/${requestId}`, { status })
                 )
             );
             setMessage({
@@ -289,14 +292,14 @@ const PendingRequests: React.FC = () => {
                                     {(request.status === 'pending' || request.status === 'remove_pending') && (
                                         <div className="flex space-x-2">
                                             <button
-                                                onClick={() => handleRequestUpdate(request.id, 'approved')}
-                                                className="bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600"
+                                                onClick={() => handleRequestUpdate(request.id, 'APPROVED')}
+                                                className="bg-green-500 text-white px-2 py-1 rounded mr-2"
                                             >
                                                 승인
                                             </button>
                                             <button
-                                                onClick={() => handleRequestUpdate(request.id, 'rejected')}
-                                                className="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600"
+                                                onClick={() => handleRequestUpdate(request.id, 'REJECTED')}
+                                                className="bg-red-500 text-white px-2 py-1 rounded"
                                             >
                                                 거절
                                             </button>

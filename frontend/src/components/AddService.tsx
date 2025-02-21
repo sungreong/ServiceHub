@@ -13,6 +13,9 @@ const AddService = () => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setError('');
+        setSuccess('');
+
         try {
             const response = await axios.post('/services', {
                 name,
@@ -20,16 +23,21 @@ const AddService = () => {
                 port: parseInt(port),
                 description,
             });
-            if (response.data && response.data.nginxUpdated) {
-                setSuccess(`서비스가 등록되었으며 Nginx 구성 업데이트 완료되었습니다. API 접근 경로: ${process.env.REACT_APP_NGINX_URL}${response.data.nginx_url}`);
-            } else {
-                setSuccess(`서비스 등록은 성공했지만 Nginx 구성 업데이트에 문제가 발생했습니다. API 접근 경로: ${process.env.REACT_APP_NGINX_URL}${response.data.nginx_url || "알 수 없음"}`);
-            }
+
+            const serviceData = response.data;
+            
+            setSuccess(
+                `서비스가 성공적으로 등록되었습니다.\n` +
+                `API 접근 경로: ${process.env.REACT_APP_NGINX_URL}${serviceData.nginx_url}`
+            );
+
             setTimeout(() => {
                 navigate('/dashboard');
             }, 2000);
-        } catch (err) {
-            setError('서비스 등록에 실패했습니다.');
+
+        } catch (err: any) {
+            const errorMessage = err.response?.data?.detail || '서비스 등록에 실패했습니다.';
+            setError(errorMessage);
         }
     };
 

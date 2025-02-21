@@ -13,13 +13,10 @@ import docker
 from docker.errors import NotFound
 import time
 from fastapi import Header
+import uuid
 
 from . import models, schemas, database
-
-# JWT 설정을 환경변수에서 가져오도록 수정
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key")  # docker-compose의 환경변수와 일치시킴
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -40,7 +37,7 @@ location /api/{{ service.id }}/ {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header Authorization $http_authorization;  # Authorization 헤더 전달
+    proxy_set_header Authorization $http_authorization;
     
     # Content-Type 헤더 추가
     proxy_set_header Accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8";
@@ -50,7 +47,7 @@ location /api/{{ service.id }}/ {
     add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
     add_header 'Access-Control-Allow-Headers' '*' always;
     
-    # OPTIONS 요청 처리 (CORS preflight)
+    # OPTIONS 요청 처리
     if ($request_method = 'OPTIONS') {
         add_header 'Access-Control-Allow-Origin' '*';
         add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS';
@@ -75,12 +72,6 @@ location /api/{{ service.id }}/ {
     proxy_send_timeout 60;
     proxy_read_timeout 60;
 }
-
-# 인증 실패시 처리할 location
-location @error401 {
-    add_header 'Access-Control-Allow-Origin' '*' always;
-    return 401 '{"error": "Authentication required"}';
-} 
 """
 
 
@@ -188,6 +179,113 @@ async def get_current_user(db: Session = Depends(database.get_db), token: str = 
     return user
 
 
+def validate_port(port: int) -> bool:
+    """포트 번호의 유효성을 검사합니다."""
+    return 1 <= port <= 65535
+
+
+# def create_service(db: Session, service: schemas.ServiceCreate):
+#     """서비스를 생성하고 Nginx 설정을 업데이트합니다."""
+#     try:
+#         # 포트 유효성 검사
+#         if not validate_port(service.port):
+#             raise HTTPException(
+#                 status_code=400, detail=f"유효하지 않은 포트 번호입니다. (허용 범위: 1-65535, 입력값: {service.port})"
+#             )
+
+#         # UUID 생성 (8자리)
+#         service_id = str(uuid.uuid4())[:8]
+
+#         # 서비스 데이터 준비
+#         service_data = {
+#             "id": service_id,
+#             "name": service.name,
+#             "ip": service.ip,
+#             "port": service.port,
+#             "description": service.description or "",
+#             "show_info": service.show_info,
+#             "created_at": datetime.utcnow(),
+#         }
+
+#         # 모델 인스턴스 생성 및 저장
+#         db_service = models.Service(**service_data)
+
+#         try:
+#             db.add(db_service)
+#             db.flush()  # 실제 DB 작업을 수행하지만 commit하지는 않음
+#         except Exception as e:
+#             db.rollback()
+#             raise HTTPException(status_code=500, detail=f"서비스 생성 중 오류 발생: {str(e)}")
+
+#         # Nginx 설정 업데이트
+#         try:
+#             update_nginx_config(db_service)
+#         except Exception as e:
+#             db.rollback()
+#             raise HTTPException(status_code=500, detail=f"Nginx 설정 업데이트 중 오류 발생: {str(e)}")
+
+#         # 모든 작업이 성공하면 commit
+#         db.commit()
+#         db.refresh(db_service)
+
+#         return {
+#             "id": db_service.id,
+#             "name": db_service.name,
+#             "ip": db_service.ip,
+#             "port": db_service.port,
+#             "description": db_service.description,
+#             "nginx_url": f"/api/{db_service.id}/",
+#             "nginxUpdated": True,
+#         }
+
+#     except HTTPException as he:
+#         raise he
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=f"예기치 않은 오류 발생: {str(e)}")
+
+
+def get_services(db: Session):
+    return db.query(models.Service).all()
+
+
+def delete_service(db: Session, service_id: int):
+    try:
+        # 서비스 설정 파일 삭제
+        config_file = f"/etc/nginx/services.d/service_{service_id}.conf"
+        if os.path.exists(config_file):
+            os.remove(config_file)
+
+        # Docker 클라이언트 초기화
+        docker_client = docker.from_env()
+
+        # Nginx 컨테이너 찾기
+        nginx_container = docker_client.containers.get("nginx")
+
+        # Nginx 설정 테스트
+        test_result = nginx_container.exec_run("nginx -t")
+        if test_result.exit_code != 0:
+            raise Exception(f"Nginx configuration test failed: {test_result.output.decode()}")
+
+        # Nginx 설정 리로드
+        reload_result = nginx_container.exec_run("nginx -s reload")
+        if reload_result.exit_code != 0:
+            raise Exception(f"Nginx reload failed: {reload_result.output.decode()}")
+
+        # DB에서 서비스 삭제
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if service:
+            db.delete(service)
+            db.commit()
+            return True
+        else:
+            raise Exception("Service not found")
+
+    except Exception as e:
+        db.rollback()
+        raise Exception(f"Failed to delete service: {str(e)}")
+
+
 def update_nginx_config(service: models.Service):
     try:
         # Jinja2 템플릿 엔진 설정
@@ -233,64 +331,3 @@ def update_nginx_config(service: models.Service):
         if "config_file" in locals() and os.path.exists(config_file):
             os.remove(config_file)
         raise Exception(f"Failed to update nginx config: {str(e)}")
-
-
-def create_service(db: Session, service: schemas.ServiceCreate):
-    db_service = models.Service(**service.dict())
-    db.add(db_service)
-    db.commit()
-    db.refresh(db_service)
-
-    # Nginx 설정 업데이트
-    update_nginx_config(db_service)
-
-    return {
-        "id": db_service.id,
-        "name": db_service.name,
-        "ip": db_service.ip,
-        "port": db_service.port,
-        "description": db_service.description,
-        "nginx_url": f"/api/{db_service.id}/",
-        "nginxUpdated": True,
-    }
-
-
-def get_services(db: Session):
-    return db.query(models.Service).all()
-
-
-def delete_service(db: Session, service_id: int):
-    try:
-        # 서비스 설정 파일 삭제
-        config_file = f"/etc/nginx/services.d/service_{service_id}.conf"
-        if os.path.exists(config_file):
-            os.remove(config_file)
-
-        # Docker 클라이언트 초기화
-        docker_client = docker.from_env()
-
-        # Nginx 컨테이너 찾기
-        nginx_container = docker_client.containers.get("nginx")
-
-        # Nginx 설정 테스트
-        test_result = nginx_container.exec_run("nginx -t")
-        if test_result.exit_code != 0:
-            raise Exception(f"Nginx configuration test failed: {test_result.output.decode()}")
-
-        # Nginx 설정 리로드
-        reload_result = nginx_container.exec_run("nginx -s reload")
-        if reload_result.exit_code != 0:
-            raise Exception(f"Nginx reload failed: {reload_result.output.decode()}")
-
-        # DB에서 서비스 삭제
-        service = db.query(models.Service).filter(models.Service.id == service_id).first()
-        if service:
-            db.delete(service)
-            db.commit()
-            return True
-        else:
-            raise Exception("Service not found")
-
-    except Exception as e:
-        db.rollback()
-        raise Exception(f"Failed to delete service: {str(e)}")

@@ -15,6 +15,7 @@ services:
       - backend_venv:/app/.venv
       - /var/run/docker.sock:/var/run/docker.sock
       - ./nginx/services.d:/etc/nginx/services.d:rw
+      - ./nginx/conf.d:/etc/nginx/conf.d:rw
     depends_on:
       db:
         condition: service_healthy
