@@ -6,10 +6,13 @@ interface Service {
     id: string;
     name: string;
     description: string;
-    ip: string;
-    port: number;
+    url: string;  // IP:PORT 대신 URL 사용
     nginx_url?: string;
     show_info: boolean;
+    protocol: string;
+    host: string;
+    port?: number;  // 포트는 선택적
+    base_path?: string;
 }
 
 interface ServiceStatus {
@@ -283,8 +286,7 @@ const Dashboard = () => {
                             </th>
                             <th className="px-4 py-2 text-left">이름</th>
                             <th className="px-4 py-2 text-left">설명</th>
-                            <th className="px-4 py-2 text-left">IP</th>
-                            <th className="px-4 py-2 text-left">Port</th>
+                            <th className="px-4 py-2 text-left">URL</th>
                             <th className="px-4 py-2 text-left">상태</th>
                             <th className="px-4 py-2 text-left">접속</th>
                             <th className="px-4 py-2 text-left">작업</th>
@@ -303,8 +305,9 @@ const Dashboard = () => {
                                 </td>
                                 <td className="px-4 py-2">{service.name}</td>
                                 <td className="px-4 py-2">{service.description}</td>
-                                <td className="px-4 py-2">{service.ip}</td>
-                                <td className="px-4 py-2">{service.port}</td>
+                                <td className="px-4 py-2" colSpan={2}>
+                                    {service.url}
+                                </td>
                                 <td className="px-4 py-2">
                                     {getStatusIndicator(service.id)}
                                 </td>
@@ -400,8 +403,7 @@ const Dashboard = () => {
                                             return (
                                                 service.name.toLowerCase().includes(searchLower) ||
                                                 service.description?.toLowerCase().includes(searchLower) ||
-                                                (isAdmin && service.ip.toLowerCase().includes(searchLower)) ||
-                                                (isAdmin && service.port.toString().includes(searchLower))
+                                                (isAdmin && service.url.toLowerCase().includes(searchLower))
                                             );
                                         })
                                         .map((service) => (
@@ -417,7 +419,7 @@ const Dashboard = () => {
                                                 <p className="text-gray-600 mb-4">{service.description}</p>
                                                 {(isAdmin || service.show_info) && (
                                                     <div className="text-sm text-gray-500">
-                                                        {service.ip}:{service.port}
+                                                        {service.url}
                                                     </div>
                                                 )}
                                             </div>

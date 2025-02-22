@@ -14,6 +14,8 @@ from docker.errors import NotFound
 import time
 from fastapi import Header
 import uuid
+from urllib.parse import urlparse
+import re
 
 from . import models, schemas, database
 from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, ALLOWED_DOMAIN
@@ -21,51 +23,61 @@ from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, ALLOWED_
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Nginx 템플릿 수정
-NGINX_TEMPLATE = """
+
+def parse_service_url(url: str):
+    """서비스 URL을 파싱하여 프로토콜, 호스트, 포트, 경로를 반환합니다."""
+    # URL이 비어있는 경우 기본값 설정
+    if not url:
+        return {"protocol": "http", "host": "", "port": None, "path": "", "is_ip": False}
+
+    # URL에 프로토콜이 없는 경우 추가
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    parsed = urlparse(url)
+    protocol = parsed.scheme or "http"
+
+    # 호스트와 포트 분리
+    netloc = parsed.netloc
+    if ":" in netloc:
+        host, port_str = netloc.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = None
+    else:
+        host = netloc
+        port = None  # 포트가 명시되지 않은 경우 None 반환
+
+    # 호스트가 비어있는 경우 처리
+    if not host and parsed.path:
+        # path에서 첫 번째 부분을 호스트로 사용
+        parts = parsed.path.strip("/").split("/", 1)
+        host = parts[0]
+        path = "/" + parts[1] if len(parts) > 1 else ""
+    else:
+        path = parsed.path
+
+    # 경로 정규화
+    if path and not path.startswith("/"):
+        path = "/" + path
+
+    # IP 주소 형식 체크
+    ip_pattern = r"^(\d{1,3}\.){3}\d{1,3}$"
+    is_ip = bool(re.match(ip_pattern, host))
+
+    print(f"[DEBUG] Parsed URL: protocol={protocol}, host={host}, port={port}, path={path}, is_ip={is_ip}")
+
+    return {"protocol": protocol, "host": host, "port": port, "path": path, "is_ip": is_ip}
+
+
+HTTP_TEMPLATE = """
 location /api/{{ service.id }}/ {
     # JWT 인증 추가
     auth_request /auth;
     auth_request_set $auth_status $upstream_status;
-
-    {% if service.protocol == 'https' %}
-    location ~ ^/api/{{ service.id }}/(.*)$ {
-        # HTTPS 설정
-        proxy_ssl_server_name on;
-        proxy_ssl_protocols TLSv1.2 TLSv1.3;
-        
-        # 서비스 호스트 설정
-        proxy_set_header Host {{ service.ip }}:{{ service.port }};
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
-
-        # URL 경로 유지하면서 프록시
-        proxy_pass https://{{ service.ip }}:{{ service.port }}/api/{{ service.id }}/$1$is_args$args;
-
-        # CORS 설정
-        add_header 'Access-Control-Allow-Origin' '*' always;
-        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
-        add_header 'Access-Control-Allow-Headers' '*' always;
-
-        # 정적 자원 및 API 요청 처리를 위한 설정
-        proxy_set_header Accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8";
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # 버퍼 설정
-        proxy_buffers 8 32k;
-        proxy_buffer_size 64k;
-
-        # 타임아웃 설정
-        proxy_connect_timeout 60;
-        proxy_send_timeout 60;
-        proxy_read_timeout 60;
-    }
-    {% else %}
-    # HTTP 설정
-    proxy_pass http://{{ service.ip }}:{{ service.port }}/;
-    proxy_set_header Host {{ service.ip }}:{{ service.port }};
+    proxy_pass http://{{ service.host }}:{{ service.port }}/;
+    proxy_set_header Host {{ service.host }}:{{ service.port }};
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -91,9 +103,38 @@ location /api/{{ service.id }}/ {
     proxy_connect_timeout 60;
     proxy_send_timeout 60;
     proxy_read_timeout 60;
+    
+}
+"""
+
+
+# HTTPS 서비스용 템플릿
+HTTPS_TEMPLATE = """
+location /api/{{ service.id }}/ {
+    # JWT 인증 추가
+    auth_request /auth;
+    auth_request_set $auth_status $upstream_status;
+
+    # $target 변수에 /api/{{ service.id }}/ 이후의 경로를 추출
+    if ($request_uri ~ ^/api/{{ service.id }}(/.*)$) {
+         set $target $1;
+    }
+    if ($request_uri = "/api/{{ service.id }}/") {
+         set $target "/";
+    }
+
+    # JWT 인증 성공 시 클라이언트를 실제 서비스 URL로 리다이렉트
+    {% if service.base_path %}
+    return 302 https://{{ service.host }}{% if service.port %}:{{ service.port }}{% endif %}{{ service.base_path }}$target$is_args$args;
+    {% else %}
+    return 302 https://{{ service.host }}{% if service.port %}:{{ service.port }}{% endif %}$target$is_args$args;
     {% endif %}
 }
+"""
 
+
+# 에러 처리 템플릿
+ERROR_TEMPLATE = """
 # 인증 실패시 처리
 error_page 401 = @error401;
 
@@ -104,6 +145,26 @@ location @error401 {
     return 401;
 }
 """
+
+
+# 템플릿 선택 함수
+def get_nginx_config(service):
+    """서비스 프로토콜에 따라 적절한 Nginx 설정을 반환합니다."""
+    if service.protocol == "https":
+        template = HTTPS_TEMPLATE
+    else:
+        template = HTTP_TEMPLATE
+
+    # Jinja2 템플릿 엔진을 사용하여 설정 생성
+    from jinja2 import Template
+
+    config = Template(template).render(service=service)
+
+    # 에러 처리 설정 추가
+    config += ERROR_TEMPLATE
+
+    return config
+
 
 auth_router = APIRouter()  # 라우터 생성
 
@@ -321,11 +382,26 @@ def delete_service(db: Session, service_id: int):
 
 def update_nginx_config(service: models.Service):
     try:
+        print("[DEBUG] Updating Nginx config for service:", service.id)
+        print(
+            "[DEBUG] Service details:",
+            {
+                "protocol": service.protocol,
+                "host": service.host,
+                "port": service.port,
+                "base_path": service.base_path,
+                "is_ip": service.is_ip,
+            },
+        )
+
         # Jinja2 템플릿 엔진 설정
-        template = jinja2.Template(NGINX_TEMPLATE)
+        template = jinja2.Template(get_nginx_config(service))
 
         # 새로운 서비스에 대한 Nginx 설정 생성
         config_content = template.render(service=service)
+
+        print("[DEBUG] Generated Nginx config:")
+        print(config_content)
 
         # 설정 파일 경로 (services.d 디렉토리 사용)
         config_file = f"/etc/nginx/services.d/service_{service.id}.conf"
@@ -337,6 +413,8 @@ def update_nginx_config(service: models.Service):
         with open(config_file, "w") as f:
             f.write(config_content)
 
+        print("[DEBUG] Nginx config file created:", config_file)
+
         # Docker 클라이언트 초기화
         docker_client = docker.from_env()
 
@@ -344,22 +422,30 @@ def update_nginx_config(service: models.Service):
         nginx_container = docker_client.containers.get("nginx")
 
         # Nginx 설정 테스트
+        print("[DEBUG] Testing Nginx configuration...")
         test_result = nginx_container.exec_run("nginx -t")
         if test_result.exit_code != 0:
+            error_message = test_result.output.decode()
+            print("[ERROR] Nginx configuration test failed:", error_message)
             # 설정 파일이 잘못된 경우 삭제
             os.remove(config_file)
-            raise Exception(f"Nginx configuration test failed: {test_result.output.decode()}")
+            raise Exception(f"Nginx configuration test failed: {error_message}")
 
         # Nginx 설정 리로드
+        print("[DEBUG] Reloading Nginx configuration...")
         reload_result = nginx_container.exec_run("nginx -s reload")
         if reload_result.exit_code != 0:
+            error_message = reload_result.output.decode()
+            print("[ERROR] Nginx reload failed:", error_message)
             # 리로드 실패 시 설정 파일 삭제
             os.remove(config_file)
-            raise Exception(f"Nginx reload failed: {reload_result.output.decode()}")
+            raise Exception(f"Nginx reload failed: {error_message}")
 
+        print("[DEBUG] Nginx configuration updated successfully")
         return True
 
     except Exception as e:
+        print("[ERROR] Failed to update Nginx config:", str(e))
         # 에러 발생 시 설정 파일이 존재하면 삭제
         if "config_file" in locals() and os.path.exists(config_file):
             os.remove(config_file)
@@ -524,3 +610,10 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail={"message": "로그인 처리 중 오류가 발생했습니다."})
+
+
+# 서비스 설정을 생성할 때 사용 예시
+def generate_service_config(service):
+    nginx_config = get_nginx_config(service)
+    # nginx_config를 파일로 저장하거나 필요한 처리를 수행
+    return nginx_config

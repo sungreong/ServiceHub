@@ -7,26 +7,22 @@ from .models import RequestStatus
 class ServiceBase(BaseModel):
     name: str
     protocol: str = "http"
-    ip: str
-    port: int
+    url: str  # IP:PORT 또는 도메인 주소
     description: Optional[str] = None
 
 
 class ServiceCreate(BaseModel):
     name: str
-    protocol: str = "http"
-    ip: str
-    port: int
+    url: str  # IP:PORT 또는 도메인 주소
+    protocol: Optional[str] = None  # URL에서 파싱된 프로토콜을 사용
     description: Optional[str] = None
-    show_info: Optional[bool] = False
+    show_info: bool = False
 
     class Config:
         schema_extra = {
             "example": {
                 "name": "Test Service",
-                "protocol": "https",
-                "ip": "192.168.1.100",
-                "port": 8080,
+                "url": "https://git.sparklingsoda.ai:8443",
                 "description": "테스트 서비스입니다.",
             }
         }
@@ -35,31 +31,31 @@ class ServiceCreate(BaseModel):
 class ServiceInDB(ServiceCreate):
     id: str
     created_at: datetime
+    host: str
+    port: Optional[int] = None  # port를 선택적으로 변경
+    base_path: Optional[str]
+    is_ip: bool
 
     class Config:
         orm_mode = True
 
 
-class Service(ServiceBase):
+class Service(BaseModel):
     id: str
     name: str
-    ip: str
-    port: int
+    protocol: str
+    host: str
+    port: Optional[int] = None  # port를 선택적으로 변경
+    base_path: Optional[str] = None
     description: Optional[str] = None
     show_info: bool = False
+    is_ip: bool = True
+    created_at: Optional[datetime] = None
+    url: str
 
     class Config:
         orm_mode = True
-        schema_extra = {
-            "example": {
-                "id": "a1b2c3d4",
-                "name": "Test Service",
-                "ip": "192.168.1.100",
-                "port": 8080,
-                "description": "테스트 서비스입니다.",
-                "show_info": False,
-            }
-        }
+        json_encoders = {datetime: lambda v: v.isoformat() if v else None}
 
 
 class ServiceWithAccess(Service):
@@ -140,8 +136,7 @@ class ServiceCreateResponse(BaseModel):
     id: str
     name: str
     protocol: str
-    ip: str
-    port: int
+    url: str
     description: Optional[str] = None
     show_info: bool = False
     nginxUpdated: bool

@@ -186,56 +186,72 @@ async def create_service(
     if not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="관리자만 서비스를 생성할 수 있습니다.",
+            detail="관리자만 서비스를 등록할 수 있습니다.",
         )
 
-    # UUID 생성 (8자리)
+    # 서비스 ID 생성
     service_id = str(uuid.uuid4())[:8]
 
-    # 프로토콜 검증
-    if service.protocol.lower() not in ["http", "https"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="프로토콜은 'http' 또는 'https'만 가능합니다.",
+    try:
+        # URL 파싱
+        url_info = auth.parse_service_url(service.url)
+        print("[DEBUG] Service URL info:", url_info)
+
+        # 프로토콜 설정 (service.protocol이 명시적으로 지정된 경우 우선 사용)
+        protocol = service.protocol if service.protocol else url_info["protocol"]
+
+        # 호스트 유효성 검사
+        if not url_info["host"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="호스트 주소가 필요합니다.",
+            )
+
+        # 서비스 데이터 준비
+        db_service = models.Service(
+            id=service_id,
+            name=service.name,
+            protocol=protocol,
+            host=url_info["host"],
+            port=url_info["port"] if url_info["port"] else None,  # 포트가 없으면 None 사용
+            base_path=url_info["path"],
+            description=service.description,
+            show_info=service.show_info,
+            is_ip=url_info["is_ip"],
         )
 
-    # 서비스 데이터 준비
-    db_service = models.Service(
-        id=service_id,
-        name=service.name,
-        protocol=service.protocol.lower(),
-        ip=service.ip,
-        port=service.port,
-        description=service.description,
-        show_info=service.show_info,
-    )
-
-    try:
         db.add(db_service)
         db.flush()  # 실제 DB 작업을 수행하지만 commit하지는 않음
 
         # Nginx 설정 업데이트
-        auth.update_nginx_config(db_service)
+        try:
+            auth.update_nginx_config(db_service)
+            nginx_updated = True
+        except Exception as e:
+            print(f"[ERROR] Nginx 설정 업데이트 실패: {str(e)}")
+            nginx_updated = False
+            # Nginx 설정 실패 시에도 서비스는 등록
 
         db.commit()
         db.refresh(db_service)
 
+        # 원본 URL 그대로 반환
         return {
             "id": db_service.id,
             "name": db_service.name,
             "protocol": db_service.protocol,
-            "ip": db_service.ip,
-            "port": db_service.port,
+            "url": service.url,  # 원본 URL 사용
             "description": db_service.description,
             "show_info": db_service.show_info,
             "nginx_url": f"/api/{db_service.id}/",
-            "nginxUpdated": True,
+            "nginxUpdated": nginx_updated,
         }
 
     except Exception as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"서비스 생성 중 오류가 발생했습니다: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서비스 등록 실패: {str(e)}",
         )
 
 
@@ -514,11 +530,30 @@ async def get_services_status(
                 status = "available" if request else "unavailable"
 
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                result = sock.connect_ex((service.ip, service.port))
-                is_running = result == 0
-                sock.close()
+                if service.is_ip:
+                    # IP 주소인 경우 직접 연결 시도
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    result = sock.connect_ex((service.host, service.port))
+                    is_running = result == 0
+                    sock.close()
+                else:
+                    # 도메인인 경우 HTTP(S) 요청으로 확인
+                    async with httpx.AsyncClient(verify=False) as client:
+                        # 기본 URL 생성
+                        url = f"{service.protocol}://{service.host}"
+
+                        # 포트가 있고, 기본 포트가 아닌 경우에만 포트 추가
+                        if service.port is not None:
+                            if (service.protocol == "http" and service.port != 80) or (
+                                service.protocol == "https" and service.port != 443
+                            ):
+                                url += f":{service.port}"
+
+                        if service.base_path:
+                            url += service.base_path
+                        response = await client.get(url, timeout=5.0)
+                        is_running = 200 <= response.status_code < 500
             except:
                 is_running = False
 
@@ -787,6 +822,8 @@ async def get_services(current_user: models.User = Depends(auth.get_current_user
         # 관리자는 모든 서비스를 볼 수 있음
         if current_user.is_admin:
             services = db.query(models.Service).all()
+            for service in services:
+                service.url = service.full_url  # full_url 프로퍼티 사용
             return services
 
         # 일반 사용자는 승인된 서비스만 볼 수 있음
@@ -796,6 +833,8 @@ async def get_services(current_user: models.User = Depends(auth.get_current_user
             .filter(models.user_services.c.user_id == current_user.id)
             .all()
         )
+        for service in services:
+            service.url = service.full_url  # full_url 프로퍼티 사용
         return services
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")

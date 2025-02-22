@@ -61,12 +61,14 @@ class Service(Base):
 
     id = Column(String(8), primary_key=True)
     name = Column(String, nullable=False)
-    protocol = Column(String, nullable=False, default="http")  # 프로토콜 필드 추가
-    ip = Column(String, nullable=False)
-    port = Column(Integer, nullable=False)
+    protocol = Column(String, nullable=False, default="http")
+    host = Column(String, nullable=False)  # IP 또는 도메인
+    port = Column(Integer, nullable=True)  # 포트를 선택적으로 변경
+    base_path = Column(String, nullable=True)  # 기본 경로 (예: /users/sign_in)
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     show_info = Column(Boolean, default=False)
+    is_ip = Column(Boolean, default=True)  # IP 주소 여부
 
     # users 관계 추가
     users = relationship("User", secondary=user_services, back_populates="services")
@@ -74,6 +76,16 @@ class Service(Base):
 
     # 관계 추가
     allowed_users = relationship("User", secondary=user_allowed_services, back_populates="allowed_services")
+
+    @property
+    def full_url(self) -> str:
+        """서비스의 전체 URL을 생성합니다."""
+        base = f"{self.protocol}://{self.host}"
+        if self.port is not None:
+            base += f":{self.port}"
+        if self.base_path:
+            base += self.base_path
+        return base
 
 
 class ServiceRequest(Base):
