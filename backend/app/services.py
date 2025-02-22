@@ -192,10 +192,18 @@ async def create_service(
     # UUID 생성 (8자리)
     service_id = str(uuid.uuid4())[:8]
 
+    # 프로토콜 검증
+    if service.protocol.lower() not in ["http", "https"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="프로토콜은 'http' 또는 'https'만 가능합니다.",
+        )
+
     # 서비스 데이터 준비
     db_service = models.Service(
         id=service_id,
         name=service.name,
+        protocol=service.protocol.lower(),
         ip=service.ip,
         port=service.port,
         description=service.description,
@@ -215,6 +223,7 @@ async def create_service(
         return {
             "id": db_service.id,
             "name": db_service.name,
+            "protocol": db_service.protocol,
             "ip": db_service.ip,
             "port": db_service.port,
             "description": db_service.description,

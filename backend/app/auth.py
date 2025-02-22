@@ -27,9 +27,45 @@ location /api/{{ service.id }}/ {
     # JWT 인증 추가
     auth_request /auth;
     auth_request_set $auth_status $upstream_status;
-    
-    # 프록시 설정
+
+    {% if service.protocol == 'https' %}
+    location ~ ^/api/{{ service.id }}/(.*)$ {
+        # HTTPS 설정
+        proxy_ssl_server_name on;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+        
+        # 서비스 호스트 설정
+        proxy_set_header Host {{ service.ip }}:{{ service.port }};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # URL 경로 유지하면서 프록시
+        proxy_pass https://{{ service.ip }}:{{ service.port }}/api/{{ service.id }}/$1$is_args$args;
+
+        # CORS 설정
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+        add_header 'Access-Control-Allow-Headers' '*' always;
+
+        # 정적 자원 및 API 요청 처리를 위한 설정
+        proxy_set_header Accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # 버퍼 설정
+        proxy_buffers 8 32k;
+        proxy_buffer_size 64k;
+
+        # 타임아웃 설정
+        proxy_connect_timeout 60;
+        proxy_send_timeout 60;
+        proxy_read_timeout 60;
+    }
+    {% else %}
+    # HTTP 설정
     proxy_pass http://{{ service.ip }}:{{ service.port }}/;
+    proxy_set_header Host {{ service.ip }}:{{ service.port }};
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -55,6 +91,7 @@ location /api/{{ service.id }}/ {
     proxy_connect_timeout 60;
     proxy_send_timeout 60;
     proxy_read_timeout 60;
+    {% endif %}
 }
 
 # 인증 실패시 처리

@@ -6,6 +6,7 @@ from .models import RequestStatus
 
 class ServiceBase(BaseModel):
     name: str
+    protocol: str = "http"
     ip: str
     port: int
     description: Optional[str] = None
@@ -13,6 +14,7 @@ class ServiceBase(BaseModel):
 
 class ServiceCreate(BaseModel):
     name: str
+    protocol: str = "http"
     ip: str
     port: int
     description: Optional[str] = None
@@ -22,6 +24,7 @@ class ServiceCreate(BaseModel):
         schema_extra = {
             "example": {
                 "name": "Test Service",
+                "protocol": "https",
                 "ip": "192.168.1.100",
                 "port": 8080,
                 "description": "테스트 서비스입니다.",
@@ -136,6 +139,7 @@ class ServiceIdsRequest(BaseModel):
 class ServiceCreateResponse(BaseModel):
     id: str
     name: str
+    protocol: str
     ip: str
     port: int
     description: Optional[str] = None

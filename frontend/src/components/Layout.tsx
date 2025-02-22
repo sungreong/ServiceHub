@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import axios from '../api/axios';
+// import logo from '../assets/logo.png';  // 로고 이미지 import
 
 interface User {
     email: string;
@@ -93,9 +94,6 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         <div className="flex h-screen bg-gray-100">
             {/* 사이드바 */}
             <div className="w-64 bg-white shadow-lg">
-                <div className="p-4">
-                    <h1 className="text-xl font-bold text-gray-800">Service Portal</h1>
-                </div>
                 <nav className="mt-4">
                     {getMenuItems().map((item) => (
                         <Link

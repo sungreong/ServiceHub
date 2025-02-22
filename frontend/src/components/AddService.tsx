@@ -4,6 +4,7 @@ import axios from '../api/axios';
 
 const AddService = () => {
     const [name, setName] = useState('');
+    const [protocol, setProtocol] = useState('http');
     const [ip, setIp] = useState('');
     const [port, setPort] = useState('');
     const [description, setDescription] = useState('');
@@ -19,6 +20,7 @@ const AddService = () => {
         try {
             const response = await axios.post('/services', {
                 name,
+                protocol,
                 ip,
                 port: parseInt(port),
                 description,
@@ -66,6 +68,20 @@ const AddService = () => {
                         className="input-field"
                         required
                     />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                        프로토콜
+                    </label>
+                    <select
+                        value={protocol}
+                        onChange={(e) => setProtocol(e.target.value)}
+                        className="input-field"
+                        required
+                    >
+                        <option value="http">HTTP</option>
+                        <option value="https">HTTPS</option>
+                    </select>
                 </div>
                 <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">

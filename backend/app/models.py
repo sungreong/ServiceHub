@@ -61,6 +61,7 @@ class Service(Base):
 
     id = Column(String(8), primary_key=True)
     name = Column(String, nullable=False)
+    protocol = Column(String, nullable=False, default="http")  # 프로토콜 필드 추가
     ip = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     description = Column(String, nullable=True)
