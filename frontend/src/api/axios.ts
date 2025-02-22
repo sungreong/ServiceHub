@@ -14,6 +14,8 @@ instance.interceptors.request.use(
     const token = localStorage.getItem('token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+      // 디버깅을 위한 로그
+      console.log('[DEBUG] Sending request with token:', token);
     }
     return config;
   },
@@ -22,11 +24,14 @@ instance.interceptors.request.use(
   }
 );
 
-// 응답 인터셉터 추가
+// 디버깅을 위한 응답 인터셉터
 instance.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log('Response:', response.status, response.data);
+    return response;
+  },
   (error) => {
-    // 401 에러 발생시 토큰 삭제 및 로그인 페이지로 리다이렉트
+    console.error('Response error:', error.response?.status, error.response?.data);
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       window.location.href = '/login';

@@ -27,15 +27,15 @@ const Login: React.FC = () => {
                 email,
                 password
             });
+            
             localStorage.setItem('token', response.data.access_token);
             navigate('/dashboard');
         } catch (err: any) {
+            console.error('Login error:', err);
             const detail = err.response?.data?.detail;
-            if (typeof detail === 'object') {
-                setError(detail);
-            } else {
-                setError({ message: '로그인에 실패했습니다.' });
-            }
+            setError(detail || { message: err.message || '로그인에 실패했습니다.' });
+        } finally {
+            setLoading(false);
         }
     };
 

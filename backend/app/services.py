@@ -1106,3 +1106,40 @@ async def delete_service(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"서비스 삭제 중 오류가 발생했습니다: {str(e)}")
+
+
+@services_router.get("/verify-service-access")
+async def verify_service_access(
+    serviceId: str, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """서비스 접근 권한을 확인합니다."""
+    try:
+        # 관리자는 모든 서비스에 접근 가능
+        if current_user.is_admin:
+            return {"allowed": True}
+
+        # 서비스 존재 여부 확인
+        service = db.query(models.Service).filter(models.Service.id == serviceId).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="Service not found")
+
+        # 사용자의 서비스 접근 권한 확인
+        access_allowed = (
+            db.query(models.user_services)
+            .filter(models.user_services.c.user_id == current_user.id, models.user_services.c.service_id == serviceId)
+            .first()
+            is not None
+        )
+
+        # 접근 권한이 있는 경우 단기 토큰 발급
+        if access_allowed:
+            service_token = auth.create_access_token(
+                data={"sub": current_user.email, "type": "service_access", "service_id": serviceId},
+                expires_delta=timedelta(minutes=5),
+            )
+            return {"allowed": True, "token": service_token}
+        print("접근 권한이 없습니다.")
+        return {"allowed": False}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"서비스 접근 권한 확인 중 오류가 발생했습니다: {str(e)}")

@@ -64,10 +64,20 @@ const Dashboard = () => {
     const checkAdminStatus = async () => {
         try {
             const token = localStorage.getItem('token');
-            const response = await axios.get('/verify-token', {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            setIsAdmin(response.data.is_admin);
+            if (!token) {
+                navigate('/login');
+                return;
+            }
+
+            // 토큰 검증 요청
+            const response = await axios.get('/verify-token');  // 헤더는 인터셉터가 추가
+
+            console.log('Token verification response:', response.data);
+            if (response.data.status === 'ok') {
+                setIsAdmin(response.data.is_admin);
+            } else {
+                throw new Error('Token verification failed');
+            }
         } catch (err) {
             console.error('Failed to verify admin status:', err);
             localStorage.removeItem('token');
@@ -130,7 +140,7 @@ const Dashboard = () => {
         }
     };
 
-    const handleServiceClick = (service: Service) => {
+    const handleServiceClick = async (service: Service) => {
         const status = servicesStatus[service.id];
         if (!status || status.access === 'unavailable') {
             alert('이 서비스에 대한 접근 권한이 없습니다.');
@@ -138,25 +148,50 @@ const Dashboard = () => {
         }
 
         const url = service.nginx_url ? service.nginx_url : `/api/${service.id}/`;
-        const token = localStorage.getItem('token');
         
-        const newWindow = window.open('', '_blank');
-        if (newWindow) {
-            newWindow.document.write(`
-                <html>
-                <head>
-                    <title>Redirecting...</title>
-                    <script>
-                        localStorage.setItem('token', '${token}');
-                        window.location.href = '${process.env.REACT_APP_NGINX_URL}${url}';
-                    </script>
-                </head>
-                <body>
-                    <p>서비스로 이동중...</p>
-                </body>
-                </html>
-            `);
-            newWindow.document.close();
+        try {
+            // 서비스 접근 전 권한 재확인
+            const authResponse = await axios.get('/services/verify-service-access', {
+                params: { serviceId: service.id }
+            });
+
+            if (authResponse.data.allowed) {
+                const userId = authResponse.data.userId;  // 백엔드에서 사용자 ID 받기
+                const targetUrl = `${process.env.REACT_APP_NGINX_URL}${url}`;
+
+                // 새 창 열기
+                const newWindow = window.open('', '_blank');
+                if (newWindow) {
+                    newWindow.document.write(`
+                        <html>
+                            <head>
+                                <title>서비스로 이동 중...</title>
+                                <script>
+                                    // 사용자 ID를 쿠키에 저장 (SameSite=Lax 설정 추가)
+                                    document.cookie = 'user_id=${userId}; path=/; SameSite=Lax';
+                                    
+                                    // 쿠키가 제대로 설정되었는지 확인
+                                    console.log('Cookie set:', document.cookie);
+                                    
+                                    // 타겟 URL로 이동
+                                    window.location.href = '${targetUrl}';
+                                </script>
+                            </head>
+                            <body>
+                                <p>서비스로 이동 중입니다...</p>
+                            </body>
+                        </html>
+                    `);
+                    newWindow.document.close();
+                } else {
+                    alert('팝업이 차단되었습니다. 팝업 차단을 해제해주세요.');
+                }
+            } else {
+                alert('서비스 접근 권한이 없습니다.');
+            }
+        } catch (error) {
+            console.error('Service access verification failed:', error);
+            alert('서비스 접근 중 오류가 발생했습니다.');
         }
     };
 

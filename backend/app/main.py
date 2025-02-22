@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Header, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, Header, File, UploadFile, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from . import models, schemas, database, auth
@@ -6,7 +6,7 @@ from typing import List, Optional
 from .database import engine, SessionLocal, get_db
 from jose import jwt, JWTError
 from .auth import SECRET_KEY, ALGORITHM
-from datetime import datetime
+from datetime import datetime, timedelta
 from .models import RequestStatus
 from pydantic import BaseModel
 from sqlalchemy import update, and_
@@ -16,11 +16,17 @@ import socket
 import os
 from .auth import SECRET_KEY, ALGORITHM
 from .services import services_router
+from .auth import auth_router  # auth_router import 추가
+from fastapi.security import OAuth2PasswordRequestForm
+from .config import ACCESS_TOKEN_EXPIRE_MINUTES
 
 # 환경변수에서 도메인 가져오기 (기본값 gmail.com)
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "gmail.com")
 
 app = FastAPI()
+
+# auth 라우터 포함
+app.include_router(auth_router)
 app.include_router(services_router)
 
 # CORS 미들웨어 설정
@@ -161,119 +167,69 @@ async def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     return db_user
 
 
-# 로그인
-@app.post("/login")
-def login(form_data: schemas.UserLogin, db: Session = Depends(get_db)):
-    try:
-        user = auth.authenticate_user(db, form_data.email, form_data.password)
-        access_token = auth.create_access_token(data={"sub": user.email})
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user_email": user.email,
-            "is_admin": user.is_admin,
-        }
-    except HTTPException as e:
-        if e.status_code == 404:
-            # 사용자가 없는 경우
-            raise HTTPException(
-                status_code=404,
-                detail={"type": "not_found", "message": "등록되지 않은 이메일입니다. 회원가입을 진행해주세요."},
-            )
-        elif e.status_code == 403 and e.detail.get("type") == "pending_approval":
-            # 승인 대기 중인 경우
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "type": "pending_approval",
-                    "message": "계정이 아직 승인되지 않았습니다.",
-                    "registration_date": e.detail.get("registration_date"),
-                },
-            )
-        raise e
-
-
-# API 서비스 등록 (Admin only)
-# @app.post("/services", response_model=schemas.Service)
-# def create_service(
-#     service: schemas.ServiceCreate,
-#     db: Session = Depends(get_db),
-#     current_user: models.User = Depends(auth.get_current_user),
-# ):
-#     if not current_user.is_admin:
-#         raise HTTPException(status_code=403, detail="Admin only")
-#     return auth.create_service(db, service)
-
-
-# API 서비스 목록 조회
-# @app.get("/services", response_model=List[schemas.Service])
-# def get_services(db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_user)):
-#     try:
-#         # 관리자는 모든 서비스를 볼 수 있음
-#         if current_user.is_admin:
-#             services = db.query(models.Service).all()
-#         else:
-#             # 일반 사용자는 승인된 서비스만 볼 수 있음
-#             services = (
-#                 db.query(models.Service)
-#                 .join(models.user_services)
-#                 .filter(models.user_services.c.user_id == current_user.id)
-#                 .all()
-#             )
-
-#         # nginx_url 추가
-#         for service in services:
-#             setattr(service, "nginx_url", f"/api/{service.id}/")
-
-#         return services
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
-
-
 # Auth 엔드포인트 수정
 @app.get("/auth")
-async def auth_check(db: Session = Depends(database.get_db), token: str = Header(None, alias="Authorization")):
+async def auth_check(request: Request, db: Session = Depends(database.get_db)):
     try:
-        if not token:
+        # 헤더에서 토큰 추출
+        auth_header = request.headers.get("Authorization")
+        if not auth_header:
             raise HTTPException(
                 status_code=401,
                 detail="No authorization token provided",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Bearer 토큰에서 실제 토큰 부분만 추출
-        scheme, token = token.split()
-        if scheme.lower() != "bearer":
+        # Bearer 토큰 형식 확인 및 토큰 추출
+        if "Bearer" not in auth_header:
+            token = auth_header  # Bearer가 없는 경우 전체를 토큰으로 간주
+        else:
+            token = auth_header.replace("Bearer ", "")
+
+        try:
+            # 토큰 검증
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            email: str = payload.get("sub")
+            if not email:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid token payload",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            # 사용자 확인
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if not user:
+                raise HTTPException(
+                    status_code=401,
+                    detail="User not found",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            # 서비스 접근용 단기 토큰 발급
+            service_token = auth.create_access_token(
+                data={"sub": email, "type": "service_access"}, expires_delta=timedelta(minutes=5)
+            )
+
+            # 응답 설정
+            response = Response(status_code=200)
+            response.headers["X-User"] = email
+            response.headers["Authorization"] = f"Bearer {service_token}"
+            return response
+
+        except JWTError as e:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid authentication scheme",
+                detail=f"Invalid token: {str(e)}",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # auth.py의 get_current_user 로직 사용
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if user is None:
-            raise HTTPException(
-                status_code=401,
-                detail="User not found",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        return {"status": "ok", "email": user.email}
-
-    except JWTError:
+    except HTTPException as he:
+        raise he
+    except Exception as e:
         raise HTTPException(
             status_code=401,
-            detail="Could not validate credentials",
+            detail=str(e),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -290,42 +246,6 @@ def delete_service_endpoint(
         return {"status": "success", "message": "Service deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/verify-token")
-async def verify_token(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)):
-    print(f"[DEBUG] Received authorization header: {authorization}")
-
-    if not authorization:
-        raise HTTPException(status_code=401, detail="No authorization token provided")
-
-    try:
-        # Bearer 토큰 검증
-        if "Bearer" in authorization:
-            token = authorization.replace("Bearer ", "")
-        else:
-            token = authorization
-
-        # 토큰 디코딩
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        user_email = payload.get("sub")
-        print(user_email)
-        if not user_email:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-        # DB에서 사용자 조회
-        user = db.query(models.User).filter(models.User.email == user_email).first()
-        print(user)
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        print(user.is_admin)
-        # 실제 DB의 admin 상태 반환
-        return {"status": "ok", "token": token, "user": user_email, "is_admin": user.is_admin}
-
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Token verification failed: {str(e)}")
 
 
 # 관리자용: 서비스 요청 목록 조회 (사용자 정보 포함)
