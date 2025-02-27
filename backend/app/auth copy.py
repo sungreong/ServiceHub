@@ -98,19 +98,8 @@ location ~ ^/api/{{ service.id }}/ {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Original-URI $request_uri;
     
-    # Streamlit 및 기타 앱을 위한 Content-Type 헤더 추가
-    proxy_set_header Accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8";
-    
-    # 웹소켓 지원 추가 (Streamlit 앱에 필요)
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    
-    # 버퍼 설정 추가 (대용량 데이터 전송 시 필요)
-    proxy_buffers 8 32k;
-    proxy_buffer_size 64k;
-    
     # 안정적인 프록시 설정
+    proxy_http_version 1.1;
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
     proxy_connect_timeout 60s;
@@ -156,12 +145,6 @@ location ~ ^/api/{{ service.id }}/ {
     sub_filter 'src="/images/' 'src="/api/{{ service.id }}/images/';
     sub_filter 'url("/images/' 'url("/api/{{ service.id }}/images/';
     sub_filter 'url(/images/' 'url(/api/{{ service.id }}/images/';
-    
-    # Streamlit 특화 경로 처리
-    sub_filter 'href="/_stcore/' 'href="/api/{{ service.id }}/_stcore/';
-    sub_filter 'src="/_stcore/' 'src="/api/{{ service.id }}/_stcore/';
-    sub_filter 'url("/_stcore/' 'url("/api/{{ service.id }}/_stcore/';
-    sub_filter 'url(/_stcore/' 'url(/api/{{ service.id }}/_stcore/';
     
     # 더 일반적인 URL 속성 변환 (/ 로 시작하는 경로만 변환)
     sub_filter 'href="/' 'href="/api/{{ service.id }}/';
@@ -217,19 +200,8 @@ location ~ ^/api/{{ service.id }}/ {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Original-URI $request_uri;
     
-    # Streamlit 및 기타 앱을 위한 Content-Type 헤더 추가
-    proxy_set_header Accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8";
-    
-    # 웹소켓 지원 추가 (Streamlit 앱에 필요)
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    
-    # 버퍼 설정 추가 (대용량 데이터 전송 시 필요)
-    proxy_buffers 8 32k;
-    proxy_buffer_size 64k;
-    
     # 안정적인 프록시 설정
+    proxy_http_version 1.1;
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
     proxy_connect_timeout 60s;
@@ -273,12 +245,6 @@ location ~ ^/api/{{ service.id }}/ {
     sub_filter 'src="/images/' 'src="/api/{{ service.id }}/images/';
     sub_filter 'url("/images/' 'url("/api/{{ service.id }}/images/';
     sub_filter 'url(/images/' 'url(/api/{{ service.id }}/images/';
-    
-    # Streamlit 특화 경로 처리
-    sub_filter 'href="/_stcore/' 'href="/api/{{ service.id }}/_stcore/';
-    sub_filter 'src="/_stcore/' 'src="/api/{{ service.id }}/_stcore/';
-    sub_filter 'url("/_stcore/' 'url("/api/{{ service.id }}/_stcore/';
-    sub_filter 'url(/_stcore/' 'url(/api/{{ service.id }}/_stcore/';
     
     # 더 일반적인 URL 속성 변환 (/ 로 시작하는 경로만 변환)
     sub_filter 'href="/' 'href="/api/{{ service.id }}/';

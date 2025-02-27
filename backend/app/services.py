@@ -1191,3 +1191,105 @@ async def verify_service_access(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"서비스 접근 권한 확인 중 오류가 발생했습니다: {str(e)}")
+
+
+@services_router.put("/{service_id}", response_model=schemas.ServiceCreateResponse)
+async def update_service(
+    service_id: str,
+    service: schemas.ServiceCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """서비스 정보를 수정합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관리자만 서비스를 수정할 수 있습니다.",
+        )
+
+    try:
+        # 기존 서비스 조회
+        db_service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not db_service:
+            raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다")
+
+        # URL 파싱
+        url_info = auth.parse_service_url(service.url)
+        print("[DEBUG] Service URL info:", url_info)
+
+        # 프로토콜 설정
+        protocol = service.protocol if service.protocol else url_info["protocol"]
+
+        # 호스트 유효성 검사
+        if not url_info["host"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="호스트 주소가 필요합니다.",
+            )
+
+        # URL 변경 여부 확인
+        url_changed = (
+            db_service.protocol != protocol
+            or db_service.host != url_info["host"]
+            or db_service.port != (url_info["port"] if url_info["port"] else None)
+            or db_service.base_path != url_info["path"]
+        )
+
+        # 서비스 데이터 업데이트
+        db_service.name = service.name
+        db_service.protocol = protocol
+        db_service.host = url_info["host"]
+        db_service.port = url_info["port"] if url_info["port"] else None
+        db_service.base_path = url_info["path"]
+        db_service.description = service.description
+        db_service.show_info = service.show_info
+        db_service.is_ip = url_info["is_ip"]
+
+        nginx_updated = False
+        # URL이 변경된 경우에만 Nginx 설정 업데이트
+        if url_changed:
+            try:
+                # 기존 Nginx 설정 백업
+                backup_config = auth.backup_nginx_config()
+
+                # Nginx 설정 업데이트 시도
+                auth.update_nginx_config(db_service)
+                nginx_updated = True
+
+                # Nginx 설정 테스트
+                if not auth.test_nginx_config():
+                    # 설정 테스트 실패 시 백업에서 복구
+                    auth.restore_nginx_config(backup_config)
+                    raise Exception("Nginx 설정 테스트 실패")
+
+                # Nginx 재시작
+                auth.reload_nginx()
+
+            except Exception as e:
+                print(f"[ERROR] Nginx 설정 업데이트 실패: {str(e)}")
+                # 실패 시 백업에서 복구 시도
+                if backup_config:
+                    auth.restore_nginx_config(backup_config)
+                nginx_updated = False
+                # Nginx 업데이트 실패는 경고로 처리하고 계속 진행
+
+        db.commit()
+        db.refresh(db_service)
+
+        return {
+            "id": db_service.id,
+            "name": db_service.name,
+            "protocol": db_service.protocol,
+            "url": service.url,
+            "description": db_service.description,
+            "show_info": db_service.show_info,
+            "nginx_url": f"/api/{db_service.id}/",
+            "nginxUpdated": nginx_updated,
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서비스 수정 실패: {str(e)}",
+        )

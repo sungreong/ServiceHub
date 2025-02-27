@@ -67,7 +67,6 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
                 { path: '/users', label: '유저 관리', icon: '👥' },
                 { path: '/users/bulk-add', label: '유저 일괄 추가', icon: '📥' },
                 { path: '/service-requests', label: '서비스 요청 관리', icon: '📨' },
-                { path: '/services/add', label: '서비스 추가', icon: '➕' },
                 { path: '/services/bulk-add', label: '서비스 일괄 추가', icon: '📥' },
                 { 
                     path: '/pending-requests', 

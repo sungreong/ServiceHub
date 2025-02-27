@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Login from './components/Login';
 import Register from './components/Register';
 import Dashboard from './components/Dashboard';
-import AddService from './components/AddService';
 import ServiceRequests from './components/ServiceRequests';
 import UserManagement from './components/UserManagement';
 import Layout from './components/Layout';
@@ -38,14 +37,6 @@ const App = () => {
                     element={
                         <PrivateRoute>
                             <Dashboard />
-                        </PrivateRoute>
-                    }
-                />
-                <Route
-                    path="/services/add"
-                    element={
-                        <PrivateRoute>
-                            <AddService />
                         </PrivateRoute>
                     }
                 />
