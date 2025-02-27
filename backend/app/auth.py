@@ -17,6 +17,7 @@ import uuid
 from urllib.parse import urlparse
 import re
 import shutil
+import json
 
 from . import models, schemas, database
 from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, ALLOWED_DOMAIN
@@ -632,6 +633,11 @@ async def auth_check(
     request_uri = request.headers.get("X-Original-URI", "")
     print(f"[DEBUG] 요청 URI: {request_uri}")
 
+    # 모든 헤더 정보 디버깅을 위해 출력
+    print(f"[DEBUG] 모든 헤더:")
+    for header_name, header_value in request.headers.items():
+        print(f"  {header_name}: {header_value}")
+
     # 정적 리소스 패턴 검사
     static_patterns = [
         "/assets/",
@@ -642,6 +648,7 @@ async def auth_check(
         "/fonts/",
         "/dist/",
         "/public/",
+        "/_stcore/",  # Streamlit 리소스
         "favicon.ico",
         ".js",
         ".css",
@@ -658,67 +665,225 @@ async def auth_check(
     ]
 
     # 로그인 페이지 패턴
-    login_patterns = ["/users/sign_in", "/-/"]
+    login_patterns = [
+        "/login",
+        "/register",
+        "/users/sign_in",
+        "/-/",
+    ]
 
     # 정적 리소스나 로그인 페이지 요청은 인증 없이 통과
     if any(pattern in request_uri for pattern in static_patterns + login_patterns):
         print(f"[DEBUG] 정적 리소스 또는 로그인 페이지 접근 - 인증 건너뜀: {request_uri}")
         return {"status": "ok", "email": "guest@example.com", "resource_type": "static"}
 
-    # JWT 인증 로직: 토큰이 유효하면 200 OK 반환
+    # JWT 인증 로직 시작
     try:
         print("[DEBUG] Authorization header:", token)  # 헤더 로깅
         print("[DEBUG] Cookie header:", cookie_auth)  # 쿠키 로깅
+        print("[DEBUG] Referer:", request.headers.get("Referer", ""))
+        print("[DEBUG] Origin:", request.headers.get("Origin", ""))
 
-        # 토큰 추출 시도
+        # 토큰 추출 시도 - /verify-token 엔드포인트와 같은 방식으로 접근
         auth_token = None
 
-        # 헤더에서 토큰 확인
+        # 1. 일반 Authorization 헤더에서 토큰 확인
         if token:
-            if token.startswith("Bearer "):
-                auth_token = token.split(" ")[1]
-        # 쿠키에서 토큰 확인
-        elif cookie_auth:
+            print("[DEBUG] Authorization 헤더 발견")
+            if "Bearer" in token:
+                auth_token = token.replace("Bearer ", "")
+                print(f"[DEBUG] Bearer 토큰 추출: {auth_token[:10] if len(auth_token) > 10 else auth_token}...")
+            else:
+                auth_token = token
+                print(f"[DEBUG] 직접 토큰 추출: {auth_token[:10] if len(auth_token) > 10 else auth_token}...")
+
+        # 2. 다른 인증 관련 헤더 확인
+        if not auth_token:
+            auth_headers = [
+                "X-Auth-Token",
+                "X-Access-Token",
+                "X-JWT-Token",
+                "X-Token",
+                "ID-Token",
+                "auth",
+                "jwt",
+            ]
+
+            for header_name in auth_headers:
+                header_value = request.headers.get(header_name)
+                if header_value:
+                    auth_token = header_value
+                    print(f"[DEBUG] {header_name} 헤더에서 토큰 추출")
+                    break
+
+        # 3. X-Original-URI 또는 Referer에서 URL 쿼리 파라미터로 전달된 토큰 확인
+        if not auth_token:
+            # X-Original-URI에서 token 파라미터 확인
+            if "token=" in request_uri:
+                token_match = re.search(r"[?&]token=([^&]+)", request_uri)
+                if token_match:
+                    auth_token = token_match.group(1)
+                    print(f"[DEBUG] URI에서 token 파라미터 추출")
+
+            # Referer에서 token 파라미터 확인
+            if not auth_token:
+                referer = request.headers.get("Referer", "")
+                if "token=" in referer:
+                    token_match = re.search(r"[?&]token=([^&]+)", referer)
+                    if token_match:
+                        auth_token = token_match.group(1)
+                        print(f"[DEBUG] Referer에서 token 파라미터 추출")
+
+        # 4. 쿠키에서 토큰 확인 - 다양한 이름으로 시도
+        if not auth_token and cookie_auth:
+            print("[DEBUG] 쿠키에서 토큰 검색 시도")
             try:
+                # 쿠키 파싱
                 cookie_dict = {}
                 for item in cookie_auth.split("; "):
                     if "=" in item:
                         key, value = item.split("=", 1)
                         cookie_dict[key] = value
-                if "Authorization" in cookie_dict:
-                    auth_value = cookie_dict["Authorization"]
-                    if auth_value.startswith("Bearer "):
-                        auth_token = auth_value.split(" ")[1]
+
+                print(f"[DEBUG] 파싱된 쿠키 키: {list(cookie_dict.keys())}")
+
+                # 다양한 쿠키 이름 시도
+                cookie_token_names = [
+                    "token",
+                    "access_token",
+                    "jwt",
+                    "jwt_token",
+                    "Authorization",
+                    "auth_token",
+                    "id_token",
+                    "session_token",
+                ]
+
+                for name in cookie_token_names:
+                    if name in cookie_dict:
+                        auth_token = cookie_dict[name]
+                        if auth_token.startswith("Bearer "):
+                            auth_token = auth_token.replace("Bearer ", "")
+                        print(f"[DEBUG] 쿠키 '{name}'에서 토큰 찾음")
+                        break
             except Exception as e:
                 print(f"[ERROR] 쿠키 파싱 실패: {str(e)}")
 
-        # 디버깅: 토큰이 없는 경우 인증 실패
+        # 5. 쿠키나 기타 헤더에서 JWT 패턴 직접 찾기
         if not auth_token:
-            print("[DEBUG] 토큰 없음, 게스트 접근 허용")
-            # 임시: 인증 없이 통과 (테스트 목적)
-            return {"status": "ok", "email": "guest@example.com"}
+            print("[DEBUG] JWT 패턴 직접 검색 시도")
 
-        # 토큰 검증 (비활성화 - 테스트 목적)
+            # 모든 헤더 값에서 JWT 패턴 검색
+            for header_name, header_value in request.headers.items():
+                if isinstance(header_value, str) and "eyJ" in header_value:
+                    try:
+                        auth_match = re.search(r"(eyJ[\w\-]+\.eyJ[\w\-]+\.[\w\-_]+)", header_value)
+                        if auth_match:
+                            auth_token = auth_match.group(1)
+                            print(f"[DEBUG] {header_name} 헤더에서 JWT 패턴 추출")
+                            break
+                    except Exception as e:
+                        print(f"[ERROR] 정규식 패턴 매칭 실패: {str(e)}")
+
+        # 토큰이 없는 경우 인증 실패 처리
+        if not auth_token:
+            print("[ERROR] 토큰을 찾을 수 없음, 인증 실패")
+            # 요청 정보 추가 로깅 (디버깅용)
+            req_info = {
+                "uri": request_uri,
+                "referer": request.headers.get("Referer", ""),
+                "origin": request.headers.get("Origin", ""),
+                "user_agent": request.headers.get("User-Agent", ""),
+            }
+            print(f"[ERROR] 인증 실패 상세 정보: {req_info}")
+
+            return Response(
+                status_code=401,
+                content="인증이 필요합니다. 로그인 후 이용해주세요.",
+                headers={
+                    "WWW-Authenticate": "Bearer",
+                    "X-Auth-Error": "Missing token",
+                    "Access-Control-Allow-Origin": "*",
+                },
+            )
+
+        # 토큰 검증
         try:
+            print(f"[DEBUG] 토큰 검증 시도: {auth_token[:10] if len(auth_token) > 10 else auth_token}...")
             payload = jwt.decode(auth_token, SECRET_KEY, algorithms=[ALGORITHM])
             email: str = payload.get("sub")
-            if email is None:
-                print("[DEBUG] 토큰에 이메일 없음, 게스트 접근 허용")
-                return {"status": "ok", "email": "guest@example.com"}
+            user_id: str = payload.get("user_id")  # 토큰에서 user_id 추출
 
-            print(f"[DEBUG] 인증 성공: {email}")
-            return {"status": "ok", "email": email}
+            if email is None:
+                print("[ERROR] 토큰에 이메일 없음, 인증 실패")
+                return Response(status_code=401, content="유효하지 않은 토큰입니다.")
+
+            # 사용자 DB 확인
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if not user:
+                print(f"[ERROR] 사용자를 찾을 수 없음: {email}")
+                return Response(status_code=401, content="등록되지 않은 사용자입니다.")
+
+            # 승인 대기 중인 사용자 체크
+            if user.status == models.UserStatus.PENDING and not user.is_admin:
+                print(f"[ERROR] 승인 대기 중인 사용자: {email}")
+                return Response(status_code=403, content="계정이 아직 승인되지 않았습니다.")
+
+            print(f"[DEBUG] 인증 성공: {email}, 사용자 ID: {user.id}, 관리자 권한: {user.is_admin}")
+
+            # 서비스 접근 권한 확인 (request_uri에서 서비스 ID 추출)
+            service_id = None
+            if request_uri.startswith("/api/"):
+                parts = request_uri.split("/")
+                if len(parts) > 2:
+                    try:
+                        service_id = int(parts[2])
+                        print(f"[DEBUG] 요청 서비스 ID: {service_id}")
+
+                        # 서비스 접근 권한 확인
+                        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+                        if service and not service.is_public:
+                            # 비공개 서비스인 경우 접근 권한 확인
+                            access_allowed = False
+
+                            # 1. 관리자는 모든 서비스에 접근 가능
+                            if user.is_admin:
+                                access_allowed = True
+                                print(f"[DEBUG] 관리자 권한으로 서비스 접근 허용: {service_id}")
+                            else:
+                                # 2. 특정 사용자에게 권한이 부여된 경우 확인
+                                service_access = (
+                                    db.query(models.ServiceAccess)
+                                    .filter(
+                                        models.ServiceAccess.service_id == service_id,
+                                        models.ServiceAccess.user_id == user.id,
+                                    )
+                                    .first()
+                                )
+
+                                if service_access:
+                                    access_allowed = True
+                                    print(f"[DEBUG] 사용자({user.id})의 서비스({service_id}) 접근 권한 확인")
+
+                                if not access_allowed:
+                                    print(f"[ERROR] 서비스 접근 권한 없음: 사용자 {user.id}, 서비스 {service_id}")
+                                    return Response(status_code=403, content="이 서비스에 접근할 권한이 없습니다.")
+                    except ValueError:
+                        # 서비스 ID가 숫자가 아닌 경우
+                        pass
+
+            return {"status": "ok", "email": email, "user_id": str(user.id), "is_admin": user.is_admin}
+
         except JWTError as e:
-            print(f"[DEBUG] JWT 오류 무시: {str(e)}, 게스트 접근 허용")
-            return {"status": "ok", "email": "guest@example.com"}
+            print(f"[ERROR] JWT 오류: {str(e)}")
+            return Response(status_code=401, content=f"유효하지 않은 인증 토큰입니다: {str(e)}")
 
     except HTTPException as he:
         print(f"[ERROR] HTTP 예외: {he.detail}")
         raise he
     except Exception as e:
-        print("[ERROR] 인증 확인 실패:", str(e))  # 에러 로깅 추가
-        # 임시: 인증 실패 무시 (테스트 목적)
-        return {"status": "ok", "email": "guest@example.com"}
+        print(f"[ERROR] 인증 확인 실패: {str(e)}")
+        return Response(status_code=500, content=f"인증 확인 중 오류가 발생했습니다: {str(e)}")
 
 
 @auth_router.get("/verify-token")
@@ -765,16 +930,22 @@ async def verify_token(authorization: Optional[str] = Header(None), db: Session 
 @auth_router.post("/login")
 async def login(email: str = Body(...), password: str = Body(...), db: Session = Depends(database.get_db)):
     try:
+        # 디버그 로그 추가
+        print(f"[DEBUG] 로그인 시도: {email}")
+        print(f"[DEBUG] 비밀번호 길이: {len(password)}")
+
         # 사용자 조회
         user = db.query(models.User).filter(models.User.email == email).first()
 
         if not user:
+            print(f"[ERROR] 등록되지 않은 사용자: {email}")
             raise HTTPException(
                 status_code=404, detail={"type": "not_found", "message": "등록되지 않은 사용자입니다."}
             )
 
         # 승인 대기 중인 사용자 체크
         if user.status == models.UserStatus.PENDING:
+            print(f"[ERROR] 승인 대기 중인 사용자: {email}")
             raise HTTPException(
                 status_code=403,
                 detail={
@@ -786,27 +957,89 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
 
         # 비밀번호 검증
         if not verify_password(password, user.hashed_password):
+            print(f"[ERROR] 비밀번호 불일치: {email}")
             raise HTTPException(status_code=401, detail={"message": "잘못된 비밀번호입니다."})
 
         # 토큰 생성 시 만료 시간을 24시간으로 설정
         access_token = create_access_token(
-            data={"sub": user.email}, expires_delta=timedelta(hours=24)  # 24시간으로 수정
+            data={"sub": user.email, "user_id": user.id}, expires_delta=timedelta(hours=24)  # 사용자 ID 추가
         )
 
-        # 응답에 토큰 정보를 추가
-        response = {
+        # 응답에 토큰 정보와 사용자 정보를 추가
+        response_data = {
             "access_token": access_token,
             "token_type": "bearer",
             "is_admin": user.is_admin,
+            "user_id": user.id,  # 사용자 ID 추가
+            "email": user.email,  # 이메일 추가
             "expires_in": 24 * 60 * 60,  # 24시간을 초 단위로
         }
 
+        # 디버그 로그 - 토큰 생성 확인
+        print(f"[DEBUG] 토큰 생성 완료: {email}")
+        print(f"[DEBUG] 토큰 길이: {len(access_token)}")
+
+        # FastAPI Response 객체 생성
+        response = Response(content=json.dumps(response_data), media_type="application/json")
+
+        # 쿠키에 토큰 저장 (httpOnly=False로 설정하여 JavaScript에서도 접근 가능)
+        response.set_cookie(
+            key="token",
+            value=access_token,
+            httponly=False,  # JavaScript에서 접근할 수 있도록 설정
+            max_age=24 * 60 * 60,  # 24시간
+            path="/",
+            samesite="lax",  # 크로스 사이트 요청에 대한 보안 설정
+        )
+
+        # 사용자 ID 쿠키 추가
+        response.set_cookie(
+            key="user_id",
+            value=str(user.id),
+            httponly=False,
+            max_age=24 * 60 * 60,
+            path="/",
+            samesite="lax",
+        )
+
+        # 사용자 이메일 쿠키 추가
+        response.set_cookie(
+            key="user_email",
+            value=user.email,
+            httponly=False,
+            max_age=24 * 60 * 60,
+            path="/",
+            samesite="lax",
+        )
+
+        # 사용자 권한 쿠키 추가
+        response.set_cookie(
+            key="is_admin",
+            value=str(user.is_admin).lower(),
+            httponly=False,
+            max_age=24 * 60 * 60,
+            path="/",
+            samesite="lax",
+        )
+
+        # 백업 쿠키 추가 (다양한 라이브러리/프레임워크와의 호환성을 위해)
+        response.set_cookie(
+            key="access_token", value=access_token, httponly=False, max_age=24 * 60 * 60, path="/", samesite="lax"
+        )
+
+        print(f"[DEBUG] 로그인 성공 - 토큰 및 사용자 정보 쿠키 설정: {email}")
         return response
 
     except HTTPException as he:
+        print(f"[ERROR] HTTP 예외 발생: {he.detail}")
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail={"message": "로그인 처리 중 오류가 발생했습니다."})
+        print(f"[ERROR] 로그인 처리 중 오류: {str(e)}")
+        print(f"[ERROR] 예외 타입: {type(e).__name__}")
+        import traceback
+
+        print(f"[ERROR] 스택 트레이스: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail={"message": f"로그인 처리 중 오류가 발생했습니다: {str(e)}"})
 
 
 # 서비스 설정을 생성할 때 사용 예시

@@ -9,7 +9,7 @@ from .config import SECRET_KEY, ALGORITHM, ALLOWED_DOMAIN
 from datetime import datetime, timedelta
 from .models import RequestStatus, ServiceStatus, Service
 from pydantic import BaseModel
-from sqlalchemy import update, and_
+from sqlalchemy import update, and_, delete
 from .models import user_services  # user_services 테이블 import
 import json
 import socket
@@ -172,8 +172,11 @@ async def get_service_status_history(service_id: str, limit: int = 10, db: Sessi
 
 # 서비스에 사용자 추가를 위한 요청 모델
 class ServiceUserAdd(BaseModel):
-    emails: str  # 쉼표로 구분된 이메일 목록
+    emails: str = ""  # 쉼표로 구분된 이메일 목록 (비어 있을 수 있음)
     showInfo: bool = False  # IP:PORT 정보 공개 여부
+
+    class Config:
+        schema_extra = {"example": {"emails": "user1@gmail.com, user2@gmail.com", "showInfo": False}}
 
 
 # API 서비스 등록 (Admin only)
@@ -263,51 +266,65 @@ async def add_users_to_service(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
+    """서비스에 사용자를 추가합니다."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
+
+    # 디버그 로깅 추가
+    print(f"[DEBUG] 서비스에 사용자 추가: {service_id}")
 
     service = db.query(models.Service).filter(models.Service.id == service_id).first()
     if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
+        print(f"[ERROR] 서비스를 찾을 수 없음: {service_id}")
+        raise HTTPException(status_code=404, detail=f"서비스를 찾을 수 없습니다. ID: {service_id}")
 
-    email_list = [email.strip() for email in user_data.emails.split(",")]
-    results = {"success": [], "not_found": [], "already_added": []}
+    try:
+        email_list = []
+        if user_data.emails:
+            email_list = [email.strip() for email in user_data.emails.split(",") if email.strip()]
 
-    for email in email_list:
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if not user:
-            results["not_found"].append(email)
-            continue
+        print(f"[DEBUG] 추가할 이메일 목록: {email_list}")
+        results = {"success": [], "not_found": [], "already_added": []}
 
-        # 현재 서비스에 대한 사용자 연결 확인
-        existing_connection = (
-            db.query(user_services)
-            .filter(user_services.c.service_id == service_id, user_services.c.user_id == user.id)
-            .first()
-        )
+        for email in email_list:
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if not user:
+                results["not_found"].append(email)
+                continue
 
-        if existing_connection:
-            results["already_added"].append(email)
-            continue
+            # 현재 서비스에 대한 사용자 연결 확인
+            existing_connection = (
+                db.query(user_services)
+                .filter(user_services.c.service_id == service_id, user_services.c.user_id == user.id)
+                .first()
+            )
 
-        # 새로운 서비스-사용자 연결 추가
-        stmt = user_services.insert().values(service_id=service_id, user_id=user.id, show_info=user_data.showInfo)
-        db.execute(stmt)
+            if existing_connection:
+                results["already_added"].append(email)
+                continue
 
-        # 서비스 요청 자동 승인 처리
-        new_request = models.ServiceRequest(
-            user_id=user.id,
-            service_id=service_id,
-            status=RequestStatus.APPROVED,
-            request_date=datetime.utcnow(),
-            response_date=datetime.utcnow(),
-            admin_created=True,
-        )
-        db.add(new_request)
-        results["success"].append(email)
+            # 새로운 서비스-사용자 연결 추가
+            stmt = user_services.insert().values(service_id=service_id, user_id=user.id, show_info=user_data.showInfo)
+            db.execute(stmt)
 
-    db.commit()
-    return results
+            # 서비스 요청 자동 승인 처리
+            new_request = models.ServiceRequest(
+                user_id=user.id,
+                service_id=service_id,
+                status=RequestStatus.APPROVED,
+                request_date=datetime.utcnow(),
+                response_date=datetime.utcnow(),
+                admin_created=True,
+            )
+            db.add(new_request)
+            results["success"].append(email)
+
+        db.commit()
+        return results
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] 사용자 추가 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"사용자 추가 중 오류가 발생했습니다: {str(e)}")
 
 
 # 사용자 추가 전 검증을 위한 엔드포인트
@@ -318,34 +335,57 @@ async def validate_service_users(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    서비스에 추가할 사용자의 유효성을 검증합니다.
+    """
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
 
+    # 디버그 로깅 추가
+    print(f"[DEBUG] 서비스 ID 검증: {service_id}")
+
+    # 서비스 존재 여부 확인
     service = db.query(models.Service).filter(models.Service.id == service_id).first()
     if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
+        print(f"[ERROR] 서비스를 찾을 수 없음: {service_id}")
+        raise HTTPException(status_code=404, detail=f"서비스를 찾을 수 없습니다. ID: {service_id}")
 
     # 이메일 목록 파싱 및 중복 제거
-    email_list = list(set([email.strip() for email in user_data.emails.split(",")]))
-    results = {"valid_users": [], "not_found": [], "already_added": []}
+    try:
+        email_list = []
+        if user_data.emails:
+            email_list = list(set([email.strip() for email in user_data.emails.split(",") if email.strip()]))
 
-    for email in email_list:
-        if not email.endswith(f"@{ALLOWED_DOMAIN}"):
-            results["not_found"].append({"email": email, "reason": "올바른 도메인이 아닙니다."})
-            continue
+        print(f"[DEBUG] 검증할 이메일 목록: {email_list}")
+        results = {"valid_users": [], "not_found": [], "already_added": []}
 
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if not user:
-            results["not_found"].append({"email": email, "reason": "등록되지 않은 사용자입니다."})
-            continue
+        for email in email_list:
+            if not email.endswith(f"@{ALLOWED_DOMAIN}"):
+                results["not_found"].append({"email": email, "reason": "올바른 도메인이 아닙니다."})
+                continue
 
-        if service in user.services:
-            results["already_added"].append({"email": email, "user_id": user.id})
-            continue
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if not user:
+                results["not_found"].append({"email": email, "reason": "등록되지 않은 사용자입니다."})
+                continue
 
-        results["valid_users"].append({"email": email, "user_id": user.id})
+            # 사용자가 이미 해당 서비스에 추가되어 있는지 확인하는 방식 변경
+            existing_connection = (
+                db.query(user_services)
+                .filter(user_services.c.service_id == service_id, user_services.c.user_id == user.id)
+                .first()
+            )
 
-    return results
+            if existing_connection:
+                results["already_added"].append({"email": email, "user_id": user.id})
+                continue
+
+            results["valid_users"].append({"email": email, "user_id": user.id, "name": user.email.split("@")[0]})
+
+        return results
+    except Exception as e:
+        print(f"[ERROR] 사용자 유효성 검증 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"사용자 유효성 검증 중 오류가 발생했습니다: {str(e)}")
 
 
 # 서비스별 사용자 목록 조회 수정
@@ -361,6 +401,11 @@ async def get_service_users(
     service = db.query(models.Service).filter(models.Service.id == service_id).first()
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
+
+    # 사용자 객체 내의 서비스 목록에 url 속성 추가
+    for user in service.users:
+        for user_service in user.services:
+            user_service.url = user_service.full_url
 
     return service.users
 
@@ -385,6 +430,11 @@ async def get_available_users(
         .order_by(models.User.is_admin.desc(), models.User.email)  # 관리자가 먼저 나오도록 정렬
         .all()
     )
+
+    # 사용자 객체 내의 서비스 목록에 url 속성 추가
+    for user in available_users:
+        for user_service in user.services:
+            user_service.url = user_service.full_url
 
     return available_users
 
@@ -662,6 +712,10 @@ async def get_my_approved_services(
             .all()
         )
 
+        # URL 속성 추가
+        for service in services:
+            service.url = service.full_url
+
         return services
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"승인된 서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
@@ -674,7 +728,11 @@ async def get_available_services(
     """현재 사용자가 요청할 수 있는 서비스 목록을 반환합니다."""
     # 관리자는 모든 서비스를 볼 수 있음
     if current_user.is_admin:
-        return db.query(models.Service).all()
+        services = db.query(models.Service).all()
+        # URL 속성 추가
+        for service in services:
+            service.url = service.full_url
+        return services
 
     # 1. 이미 요청했거나 승인된 서비스 ID 목록
     existing_requests = (
@@ -697,6 +755,10 @@ async def get_available_services(
         .all()
     )
 
+    # URL 속성 추가
+    for service in available_services:
+        service.url = service.full_url
+
     return available_services
 
 
@@ -709,42 +771,55 @@ async def allow_users_to_request(
 ):
     """특정 서비스에 대해 사용자들의 요청 권한을 부여합니다."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
+
+    # 디버그 로깅 추가
+    print(f"[DEBUG] 서비스 사용자 권한 부여: {service_id}")
 
     service = db.query(models.Service).filter(models.Service.id == service_id).first()
     if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
+        print(f"[ERROR] 서비스를 찾을 수 없음: {service_id}")
+        raise HTTPException(status_code=404, detail=f"서비스를 찾을 수 없습니다. ID: {service_id}")
 
-    email_list = [email.strip() for email in user_data.emails.split(",")]
-    results = {"success": [], "not_found": [], "already_allowed": []}
+    try:
+        email_list = []
+        if user_data.emails:
+            email_list = [email.strip() for email in user_data.emails.split(",") if email.strip()]
 
-    for email in email_list:
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if not user:
-            results["not_found"].append(email)
-            continue
+        print(f"[DEBUG] 권한 부여할 이메일 목록: {email_list}")
+        results = {"success": [], "not_found": [], "already_allowed": []}
 
-        # 이미 허용된 사용자인지 확인
-        existing_permission = (
-            db.query(models.user_allowed_services)
-            .filter(
-                models.user_allowed_services.c.service_id == service_id,
-                models.user_allowed_services.c.user_id == user.id,
+        for email in email_list:
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if not user:
+                results["not_found"].append(email)
+                continue
+
+            # 이미 허용된 사용자인지 확인
+            existing_permission = (
+                db.query(models.user_allowed_services)
+                .filter(
+                    models.user_allowed_services.c.service_id == service_id,
+                    models.user_allowed_services.c.user_id == user.id,
+                )
+                .first()
             )
-            .first()
-        )
 
-        if existing_permission:
-            results["already_allowed"].append(email)
-            continue
+            if existing_permission:
+                results["already_allowed"].append(email)
+                continue
 
-        # 새로운 허용 추가
-        stmt = models.user_allowed_services.insert().values(service_id=service_id, user_id=user.id)
-        db.execute(stmt)
-        results["success"].append(email)
+            # 새로운 허용 추가
+            stmt = models.user_allowed_services.insert().values(service_id=service_id, user_id=user.id)
+            db.execute(stmt)
+            results["success"].append(email)
 
-    db.commit()
-    return results
+        db.commit()
+        return results
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] 사용자 권한 부여 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"사용자 권한 부여 중 오류가 발생했습니다: {str(e)}")
 
 
 # 관리자가 사용자에게 서비스 요청 권한을 부여하는 API
@@ -812,6 +887,10 @@ async def get_user_allowed_services(
         .all()
     )
 
+    # URL 속성 추가
+    for service in services:
+        service.url = service.full_url
+
     return services
 
 
@@ -833,11 +912,12 @@ async def get_services(current_user: models.User = Depends(auth.get_current_user
             .filter(models.user_services.c.user_id == current_user.id)
             .all()
         )
+        # 일반 사용자도 URL 속성 추가
         for service in services:
-            service.url = service.full_url  # full_url 프로퍼티 사용
+            service.url = service.full_url
         return services
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @services_router.post("/service-requests/{service_id}", response_model=schemas.ServiceRequest)
@@ -975,6 +1055,18 @@ async def get_my_service_requests(
             .order_by(models.ServiceRequest.request_date.desc())
             .all()
         )
+
+        # 서비스 객체에 URL 속성 추가
+        for request in requests:
+            # 서비스 요청의 서비스 객체에 url 추가
+            if request.service:
+                request.service.url = request.service.full_url
+
+            # 서비스 요청의 사용자 객체에 포함된 서비스 객체들에도 url 추가
+            if request.user and request.user.services:
+                for service in request.user.services:
+                    service.url = service.full_url
+
         return requests
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"서비스 요청 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
@@ -986,16 +1078,27 @@ async def get_all_service_requests(
 ):
     """모든 서비스 요청 목록을 반환합니다. (관리자용)"""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
 
     try:
         requests = (
             db.query(models.ServiceRequest)
-            .join(models.User)  # 사용자 정보 포함
-            .join(models.Service)  # 서비스 정보 포함
+            .join(models.Service)
             .order_by(models.ServiceRequest.request_date.desc())
             .all()
         )
+
+        # 서비스 객체에 URL 속성 추가
+        for request in requests:
+            # 서비스 요청의 서비스 객체에 url 추가
+            if request.service:
+                request.service.url = request.service.full_url
+
+            # 서비스 요청의 사용자 객체에 포함된 서비스 객체들에도 url 추가
+            if request.user and request.user.services:
+                for service in request.user.services:
+                    service.url = service.full_url
+
         return requests
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"서비스 요청 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
@@ -1036,7 +1139,7 @@ async def update_user_service_permissions(
     if to_remove:
         try:
             # 1. user_allowed_services 테이블에서 제거
-            stmt = models.user_allowed_services.delete().where(
+            stmt = delete(models.user_allowed_services).where(
                 and_(
                     models.user_allowed_services.c.user_id == user_id,
                     models.user_allowed_services.c.service_id.in_(to_remove),
@@ -1045,7 +1148,7 @@ async def update_user_service_permissions(
             db.execute(stmt)
 
             # 2. user_services 테이블에서 제거 (승인된 서비스 접근 권한 제거)
-            stmt = models.user_services.delete().where(
+            stmt = delete(models.user_services).where(
                 and_(
                     models.user_services.c.user_id == user_id,
                     models.user_services.c.service_id.in_(to_remove),

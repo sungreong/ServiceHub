@@ -693,28 +693,62 @@ const Dashboard = () => {
 
             if (authResponse.data.allowed) {
                 const userId = authResponse.data.userId;  // 백엔드에서 사용자 ID 받기
+                
+                // 로컬 스토리지에서 토큰 가져오기
+                const token = localStorage.getItem('token');
+                console.log('[DEBUG] 서비스 접근에 사용할 토큰:', token ? '토큰 존재' : '토큰 없음');
+                
+                // 대상 URL 구성
                 const targetUrl = `${process.env.REACT_APP_NGINX_URL}${url}`;
-
+                
+                console.log('[DEBUG] 대상 서비스 URL:', targetUrl);
+                
                 // 새 창 열기
                 const newWindow = window.open('', '_blank');
+                
                 if (newWindow) {
+                    // 중간 브릿지 페이지를 통해 쿠키 설정 후 실제 서비스로 이동
                     newWindow.document.write(`
                         <html>
                             <head>
                                 <title>서비스로 이동 중...</title>
                                 <script>
-                                    // 사용자 ID를 쿠키에 저장 (SameSite=Lax 설정 추가)
-                                    document.cookie = 'user_id=${userId}; path=/; SameSite=Lax';
+                                    // 도메인 전체에서 사용 가능한 쿠키 설정 (SameSite=Lax로 크로스 사이트 요청 허용)
+                                    // 토큰 쿠키 설정
+                                    document.cookie = 'token=${token}; path=/; SameSite=Lax; max-age=86400';
+                                    
+                                    // 사용자 ID 쿠키 설정
+                                    document.cookie = 'user_id=${userId}; path=/; SameSite=Lax; max-age=86400';
+                                    
+                                    // 관리자 상태 쿠키
+                                    document.cookie = 'is_admin=${localStorage.getItem('is_admin') || 'false'}; path=/; SameSite=Lax; max-age=86400';
+                                    
+                                    // 쿠키 전송을 위한 추가 설정
+                                    document.cookie = 'access_token=${token}; path=/; SameSite=Lax; max-age=86400';
                                     
                                     // 쿠키가 제대로 설정되었는지 확인
-                                    console.log('Cookie set:', document.cookie);
+                                    console.log('[DEBUG] 브릿지 페이지 쿠키 설정:', document.cookie);
                                     
-                                    // 타겟 URL로 이동
-                                    window.location.href = '${targetUrl}';
+                                    // 잠시 대기 후 대상 URL로 이동 (쿠키가 설정될 시간 확보)
+                                    setTimeout(function() {
+                                        window.location.href = '${targetUrl}';
+                                    }, 500);
                                 </script>
                             </head>
                             <body>
-                                <p>서비스로 이동 중입니다...</p>
+                                <div style="display: flex; justify-content: center; align-items: center; height: 100vh; font-family: Arial, sans-serif;">
+                                    <div style="text-align: center;">
+                                        <h3>서비스로 이동 중입니다...</h3>
+                                        <p>잠시만 기다려주세요.</p>
+                                        <div style="margin-top: 20px; width: 40px; height: 40px; border: 5px solid #f3f3f3; border-top: 5px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; margin-left: auto; margin-right: auto;"></div>
+                                        <style>
+                                            @keyframes spin {
+                                                0% { transform: rotate(0deg); }
+                                                100% { transform: rotate(360deg); }
+                                            }
+                                        </style>
+                                    </div>
+                                </div>
                             </body>
                         </html>
                     `);

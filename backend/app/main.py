@@ -254,7 +254,7 @@ async def get_service_requests(
     current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
 ):
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
 
     # 모든 요청을 가져오되, 사용자와 서비스 정보도 함께 로드
     requests = (
@@ -264,6 +264,18 @@ async def get_service_requests(
         .order_by(models.ServiceRequest.request_date.desc())
         .all()
     )
+
+    # URL 속성 추가 - 각 요청의 서비스 객체 및 사용자 객체의 서비스 목록에 url 속성 추가
+    for request in requests:
+        # 서비스 요청의 서비스 객체에 url 추가
+        if request.service:
+            request.service.url = request.service.full_url
+
+        # 사용자 객체의 서비스 객체들에도 url 추가
+        if request.user and request.user.services:
+            for service in request.user.services:
+                service.url = service.full_url
+
     return requests
 
 
@@ -332,7 +344,15 @@ async def update_service_request(
 async def get_users(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
-    return db.query(models.User).all()
+
+    users = db.query(models.User).all()
+
+    # 사용자 객체 내의 서비스 목록에 url 속성 추가
+    for user in users:
+        for service in user.services:
+            service.url = service.full_url
+
+    return users
 
 
 # 사용자 권한 변경 (관리자용)
@@ -366,7 +386,20 @@ async def update_user(
 async def get_my_service_requests(
     current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
 ):
-    return db.query(models.ServiceRequest).filter(models.ServiceRequest.user_id == current_user.id).all()
+    requests = db.query(models.ServiceRequest).filter(models.ServiceRequest.user_id == current_user.id).all()
+
+    # URL 속성 추가
+    for request in requests:
+        # 서비스 요청의 서비스 객체에 url 추가
+        if request.service:
+            request.service.url = request.service.full_url
+
+        # 사용자 객체의 서비스 객체들에도 url 추가
+        if request.user and request.user.services:
+            for service in request.user.services:
+                service.url = service.full_url
+
+    return requests
 
 
 # 요청 가능한 서비스 목록 조회 수정
@@ -377,7 +410,11 @@ async def get_available_services(
     """현재 사용자가 요청할 수 있는 서비스 목록을 반환합니다."""
     # 관리자는 모든 서비스에 접근 가능
     if current_user.is_admin:
-        return db.query(models.Service).all()
+        services = db.query(models.Service).all()
+        # URL 속성 추가
+        for service in services:
+            service.url = service.full_url
+        return services
 
     # 1. 이미 요청했거나 승인된 서비스 ID 목록
     existing_requests = (
@@ -400,6 +437,10 @@ async def get_available_services(
         .all()
     )
 
+    # URL 속성 추가
+    for service in available_services:
+        service.url = service.full_url
+
     return available_services
 
 
@@ -417,6 +458,10 @@ async def get_my_approved_services(
         )
         .all()
     )
+
+    # URL 속성 추가
+    for service in approved_services:
+        service.url = service.full_url
 
     return approved_services
 
@@ -641,7 +686,14 @@ async def get_pending_users(current_user: models.User = Depends(auth.get_current
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
 
-    return db.query(models.User).filter(models.User.status == models.UserStatus.PENDING).all()
+    users = db.query(models.User).filter(models.User.status == models.UserStatus.PENDING).all()
+
+    # 사용자 객체 내의 서비스 목록에 url 속성 추가
+    for user in users:
+        for service in user.services:
+            service.url = service.full_url
+
+    return users
 
 
 # 사용자 승인/거절
@@ -676,7 +728,7 @@ async def get_user_allowed_services(
 ):
     """특정 사용자에게 허용된 서비스 목록을 반환합니다."""
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
 
     services = (
         db.query(models.Service)
@@ -684,6 +736,10 @@ async def get_user_allowed_services(
         .filter(models.user_allowed_services.c.user_id == user_id)
         .all()
     )
+
+    # URL 속성 추가
+    for service in services:
+        service.url = service.full_url
 
     return services
 
