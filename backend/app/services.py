@@ -104,10 +104,14 @@ async def update_service_status_history(db: Session, service_id: str, status: Di
 # get_service_by_id 함수 추가
 async def get_service_by_id(service_id: str, db: Session = Depends(get_db)) -> Service:
     """서비스 ID로 서비스를 조회합니다."""
-    service = db.query(models.Service).filter(models.Service.id == service_id).first()
-    if not service:
-        raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다")
-    return service
+    try:
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다")
+        return service
+    except Exception as e:
+        print(f"[ERROR] 서비스 조회 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"서비스 조회 중 오류가 발생했습니다: {str(e)}")
 
 
 @services_router.get("/{service_id}/status")
@@ -725,6 +729,27 @@ async def get_my_approved_services(
         raise HTTPException(status_code=500, detail=f"승인된 서비스 목록을 가져오는 중 오류가 발생했습니다: {str(e)}")
 
 
+# 사용자의 서비스 요청 목록 조회
+@services_router.get("/my-service-requests", response_model=List[schemas.ServiceRequestWithDetails])
+async def get_my_service_requests(
+    current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    requests = db.query(models.ServiceRequest).filter(models.ServiceRequest.user_id == current_user.id).all()
+
+    # URL 속성 추가
+    for request in requests:
+        # 서비스 요청의 서비스 객체에 url 추가
+        if request.service:
+            request.service.url = request.service.full_url
+
+        # 사용자 객체의 서비스 객체들에도 url 추가
+        if request.user and request.user.services:
+            for service in request.user.services:
+                service.url = service.full_url
+
+    return requests
+
+
 @services_router.get("/available-services", response_model=List[schemas.Service])
 async def get_available_services(
     current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
@@ -747,6 +772,15 @@ async def get_available_services(
         )
         .subquery()
     )
+
+    # 2. 요청 가능한 서비스 목록 조회
+    services = db.query(models.Service).filter(~models.Service.id.in_(db.query(existing_requests.c.service_id))).all()
+
+    # URL 속성 추가
+    for service in services:
+        service.url = service.full_url
+    print(services)
+    return services
 
 
 @services_router.put("/{service_id}", response_model=schemas.ServiceCreateResponse)
@@ -1161,18 +1195,18 @@ async def delete_service(
 async def get_pending_requests_count(
     db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_user)
 ):
-    """관리자용: 대기 중인 서비스 요청 수를 반환합니다."""
-
-    # 관리자 권한 확인
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="관리자만 이 기능을 사용할 수 있습니다.",
-        )
-
+    """대기 중인 서비스 요청 수를 반환합니다."""
     try:
-        # 대기 중인 요청 수 계산
-        pending_count = db.query(models.ServiceRequest).filter(models.ServiceRequest.status == "pending").count()
+        # 관리자인 경우 모든 대기 중인 요청 수 반환
+        if current_user.is_admin:
+            pending_count = db.query(models.ServiceRequest).filter(models.ServiceRequest.status == "pending").count()
+        else:
+            # 일반 사용자인 경우 자신의 대기 중인 요청 수 반환
+            pending_count = (
+                db.query(models.ServiceRequest)
+                .filter(models.ServiceRequest.user_id == current_user.id, models.ServiceRequest.status == "pending")
+                .count()
+            )
 
         return {"count": pending_count}
     except Exception as e:
@@ -1182,3 +1216,238 @@ async def get_pending_requests_count(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"대기 중인 요청 수 조회 중 오류가 발생했습니다: {str(e)}",
         )
+
+
+# 상태 업데이트를 위한 요청 모델들 추가
+class ServiceRequestUpdate(BaseModel):
+    status: str
+
+
+# 관리자의 서비스 요청 처리
+@services_router.put("/service-requests/{request_id}")
+async def update_service_request(
+    request_id: int,
+    request_update: ServiceRequestUpdate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    if request_update.status not in ["approved", "rejected", "pending"]:
+        raise HTTPException(status_code=400, detail="Invalid status value")
+
+    db_request = db.query(models.ServiceRequest).filter(models.ServiceRequest.id == request_id).first()
+    if not db_request:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    try:
+        if request_update.status == "approved":
+            if db_request.status == RequestStatus.PENDING:
+                # 서비스 접근 요청 승인 시 user_services에 추가
+                stmt = user_services.insert().values(
+                    service_id=db_request.service_id, user_id=db_request.user_id, show_info=False
+                )
+                db.execute(stmt)
+            elif db_request.status == RequestStatus.REMOVE_PENDING:
+                # 서비스 제거 요청 승인 시 user_services에서 삭제
+                stmt = user_services.delete().where(
+                    and_(
+                        user_services.c.service_id == db_request.service_id,
+                        user_services.c.user_id == db_request.user_id,
+                    )
+                )
+                db.execute(stmt)
+
+        db_request.status = RequestStatus(request_update.status)
+        db_request.response_date = datetime.utcnow()
+        db.commit()
+
+        return {"status": "success", "message": f"Request {request_update.status}"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 관리자용: 서비스 요청 목록 조회 (사용자 정보 포함)
+@services_router.get("/service-requests", response_model=List[schemas.ServiceRequestWithDetails])
+async def get_service_requests(
+    current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """관리자용: 모든 서비스 요청 목록을 조회합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
+
+    # 모든 요청을 가져오되, 사용자와 서비스 정보도 함께 로드
+    requests = (
+        db.query(models.ServiceRequest)
+        .join(models.User)
+        .join(models.Service)
+        .order_by(models.ServiceRequest.request_date.desc())
+        .all()
+    )
+
+    # URL 속성 추가 - 각 요청의 서비스 객체 및 사용자 객체의 서비스 목록에 url 속성 추가
+    for request in requests:
+        # 서비스 요청의 서비스 객체에 url 추가
+        if request.service:
+            request.service.url = request.service.full_url
+
+        # 사용자 객체의 서비스 객체들에도 url 추가
+        if request.user and request.user.services:
+            for service in request.user.services:
+                service.url = service.full_url
+
+    return requests
+
+
+# 서비스 요청 승인 API
+@services_router.put("/service-requests/{request_id}/approve")
+async def approve_service_request(
+    request_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """관리자용: 서비스 요청을 승인합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
+
+    db_request = db.query(models.ServiceRequest).filter(models.ServiceRequest.id == request_id).first()
+    if not db_request:
+        raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다")
+
+    try:
+        if db_request.status == RequestStatus.PENDING:
+            # 서비스 접근 요청 승인 시 user_services에 추가
+            stmt = user_services.insert().values(
+                service_id=db_request.service_id, user_id=db_request.user_id, show_info=False
+            )
+            db.execute(stmt)
+        elif db_request.status == RequestStatus.REMOVE_PENDING:
+            # 서비스 제거 요청 승인 시 user_services에서 삭제
+            stmt = user_services.delete().where(
+                and_(
+                    user_services.c.service_id == db_request.service_id,
+                    user_services.c.user_id == db_request.user_id,
+                )
+            )
+            db.execute(stmt)
+
+        db_request.status = RequestStatus.APPROVED
+        db_request.response_date = datetime.utcnow()
+        db.commit()
+
+        return {"status": "success", "message": "요청이 승인되었습니다"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 서비스 요청 거절 API
+@services_router.put("/service-requests/{request_id}/reject")
+async def reject_service_request(
+    request_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """관리자용: 서비스 요청을 거절합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 접근 가능합니다")
+
+    db_request = db.query(models.ServiceRequest).filter(models.ServiceRequest.id == request_id).first()
+    if not db_request:
+        raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다")
+
+    try:
+        db_request.status = RequestStatus.REJECTED
+        db_request.response_date = datetime.utcnow()
+        db.commit()
+
+        return {"status": "success", "message": "요청이 거절되었습니다"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 서비스 요청 생성 API
+@services_router.post("/service-requests/{service_id}")
+async def create_service_request(
+    service_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """사용자가 특정 서비스에 대한 접근 요청을 생성합니다."""
+    try:
+        # 서비스 존재 여부 확인
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다")
+
+        # 이미 요청이 존재하는지 확인
+        existing_request = (
+            db.query(models.ServiceRequest)
+            .filter(
+                models.ServiceRequest.user_id == current_user.id,
+                models.ServiceRequest.service_id == service_id,
+                models.ServiceRequest.status.in_([RequestStatus.PENDING, RequestStatus.APPROVED]),
+            )
+            .first()
+        )
+
+        if existing_request:
+            if existing_request.status == RequestStatus.PENDING:
+                raise HTTPException(status_code=400, detail="이미 대기 중인 요청이 있습니다")
+            elif existing_request.status == RequestStatus.APPROVED:
+                raise HTTPException(status_code=400, detail="이미 승인된 요청이 있습니다")
+
+        # 새 요청 생성
+        new_request = models.ServiceRequest(
+            user_id=current_user.id,
+            service_id=service_id,
+            status=RequestStatus.PENDING,
+            request_date=datetime.utcnow(),
+        )
+        db.add(new_request)
+        db.commit()
+        db.refresh(new_request)
+
+        return {"status": "success", "message": "서비스 접근 요청이 생성되었습니다", "request_id": new_request.id}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"요청 생성 중 오류가 발생했습니다: {str(e)}")
+
+
+# 서비스 요청 취소 API
+@services_router.delete("/service-requests/{request_id}")
+async def cancel_service_request(
+    request_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """사용자가 자신의 서비스 요청을 취소합니다."""
+    try:
+        # 요청 존재 여부 확인
+        request = db.query(models.ServiceRequest).filter(models.ServiceRequest.id == request_id).first()
+        if not request:
+            raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다")
+
+        # 요청 소유자 확인
+        if request.user_id != current_user.id and not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="다른 사용자의 요청을 취소할 수 없습니다")
+
+        # 대기 중인 요청만 취소 가능
+        if request.status != RequestStatus.PENDING:
+            raise HTTPException(status_code=400, detail="대기 중인 요청만 취소할 수 있습니다")
+
+        # 요청 삭제
+        db.delete(request)
+        db.commit()
+
+        return {"status": "success", "message": "요청이 취소되었습니다"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"요청 취소 중 오류가 발생했습니다: {str(e)}")

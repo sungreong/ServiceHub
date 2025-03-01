@@ -12,6 +12,8 @@ import BulkServiceAdd from './components/BulkServiceAdd';
 import BulkUserAdd from './components/BulkUserAdd';
 import ServiceUserManagement from './components/ServiceUserManagement';
 import Monitoring from './components/Monitoring';
+import UserMonitoring from './components/UserMonitoring';
+import FaqPage from './pages/FaqPage';
 import './App.css';
 
 interface PrivateRouteProps {
@@ -46,6 +48,14 @@ const App = () => {
                     element={
                         <PrivateRoute>
                             <Monitoring />
+                        </PrivateRoute>
+                    }
+                />
+                <Route
+                    path="/my-monitoring"
+                    element={
+                        <PrivateRoute>
+                            <UserMonitoring />
                         </PrivateRoute>
                     }
                 />
@@ -102,6 +112,14 @@ const App = () => {
                     element={
                         <PrivateRoute>
                             <ServiceUserManagement />
+                        </PrivateRoute>
+                    }
+                />
+                <Route
+                    path="/faq"
+                    element={
+                        <PrivateRoute>
+                            <FaqPage />
                         </PrivateRoute>
                     }
                 />

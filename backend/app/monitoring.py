@@ -2,14 +2,14 @@ from fastapi import FastAPI, Depends, HTTPException, Header, File, UploadFile, A
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from . import models, schemas, database, auth
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any, Tuple
 from .database import engine, SessionLocal, get_db
 from jose import jwt, JWTError
 from .config import SECRET_KEY, ALGORITHM, ALLOWED_DOMAIN
 from datetime import datetime, timedelta
 from .models import RequestStatus, ServiceStatus, Service, ServiceAccess
 from pydantic import BaseModel
-from sqlalchemy import update, and_, delete, func
+from sqlalchemy import update, and_, delete, func, desc, or_, text
 from .models import user_services  # user_services 테이블 import
 import json
 import socket
@@ -866,6 +866,406 @@ async def get_specific_user_stats(
         hourly_stats.append({"hour": hour, "accesses": hour_accesses})
 
     return {"user_info": user_info, "daily_stats": daily_stats, "hourly_stats": hourly_stats}
+
+
+# 사용자 서비스 모니터링 엔드포인트 추가
+# @monitoring_router.get("/user/services/stats", response_model=Dict)
+# async def get_user_services_stats(
+#     db: Session = Depends(get_db),
+#     current_user: models.User = Depends(auth.get_current_user),
+# ):
+#     """현재 로그인한 사용자가 접근 가능한 서비스 목록과 기본 통계를 조회합니다."""
+#     try:
+#         print("서비스 정보 조회")
+#         # 사용자가 접근 가능한 서비스 목록 조회
+#         if current_user.is_admin:
+#             # 관리자는 모든 서비스에 접근 가능
+#             services = db.query(models.Service).all()
+#         else:
+#             # 일반 사용자는 권한이 있는 서비스만 접근 가능
+#             services = (
+#                 db.query(models.Service)
+#                 .join(models.user_services, models.Service.id == models.user_services.c.service_id)
+#                 .filter(models.user_services.c.user_id == current_user.id)
+#                 .all()
+#             )
+
+#         # 현재 시간 설정
+#         now = datetime.utcnow()
+#         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+#         # 일주일 전 시간 설정 (period_days용)
+#         week_ago = now - timedelta(days=7)
+
+#         # 서비스별 통계 정보 추가
+#         services_stats = []
+#         total_accesses = 0
+
+#         for service in services:
+#             try:
+#                 # 서비스 상태 확인
+#                 service_status_result = await check_service_status(service)
+#                 status = service_status_result.get("status", "unknown")
+#             except Exception as e:
+#                 print(f"[ERROR] 서비스 상태 확인 중 오류: {str(e)}")
+#                 status = "error"
+
+#             # 오늘 접속 횟수
+#             today_accesses = (
+#                 db.query(func.count(models.ServiceAccess.id))
+#                 .filter(
+#                     models.ServiceAccess.service_id == service.id,
+#                     models.ServiceAccess.user_id == current_user.id,
+#                     models.ServiceAccess.access_time >= today_start,
+#                 )
+#                 .scalar()
+#             ) or 0
+
+#             # 전체 접속 횟수
+#             service_total_accesses = (
+#                 db.query(func.count(models.ServiceAccess.id))
+#                 .filter(models.ServiceAccess.service_id == service.id, models.ServiceAccess.user_id == current_user.id)
+#                 .scalar()
+#             ) or 0
+
+#             # 기간별(7일) 접속 횟수
+#             period_accesses = (
+#                 db.query(func.count(models.ServiceAccess.id))
+#                 .filter(
+#                     models.ServiceAccess.service_id == service.id,
+#                     models.ServiceAccess.user_id == current_user.id,
+#                     models.ServiceAccess.access_time >= week_ago,
+#                 )
+#                 .scalar()
+#             ) or 0
+
+#             # 마지막 접속 시간
+#             last_access = (
+#                 db.query(models.ServiceAccess.access_time)
+#                 .filter(models.ServiceAccess.service_id == service.id, models.ServiceAccess.user_id == current_user.id)
+#                 .order_by(models.ServiceAccess.access_time.desc())
+#                 .first()
+#             )
+
+#             last_access_time = last_access[0] if last_access else None
+
+#             # 현재 활성 세션 여부
+#             active_sessions = (
+#                 db.query(func.count(models.ServiceAccess.id))
+#                 .filter(
+#                     models.ServiceAccess.service_id == service.id,
+#                     models.ServiceAccess.user_id == current_user.id,
+#                     models.ServiceAccess.is_active == True,
+#                 )
+#                 .scalar()
+#             ) or 0
+
+#             # 현재 활성 사용자 수 (동시 접속자 수)
+#             concurrent_users = (
+#                 db.query(func.count(func.distinct(models.ServiceAccess.user_id)))
+#                 .filter(
+#                     models.ServiceAccess.service_id == service.id,
+#                     models.ServiceAccess.is_active == True,
+#                 )
+#                 .scalar()
+#             ) or 0
+
+#             # 전체 활성 사용자 수
+#             total_active_users = (
+#                 db.query(func.count(func.distinct(models.ServiceAccess.user_id)))
+#                 .filter(models.ServiceAccess.service_id == service.id)
+#                 .scalar()
+#             ) or 0
+
+#             total_accesses += service_total_accesses
+
+#             services_stats.append(
+#                 {
+#                     "service_id": service.id,
+#                     "service_name": service.name,
+#                     "description": service.description,
+#                     "status": status,
+#                     "today_accesses": today_accesses,
+#                     "total_accesses": service_total_accesses,
+#                     "period_accesses": period_accesses,
+#                     "active_sessions": active_sessions,
+#                     "concurrent_users": concurrent_users,
+#                     "total_active_users": total_active_users,
+#                     "last_access": last_access_time.strftime("%Y-%m-%d %H:%M:%S") if last_access_time else None,
+#                     "has_active_session": active_sessions > 0,
+#                     "url": service.full_url if hasattr(service, "full_url") else service.url,
+#                     "icon": service.icon if hasattr(service, "icon") else None,
+#                 }
+#             )
+
+#         return {
+#             "user_email": current_user.email,
+#             "user_id": current_user.id,
+#             "total_services": len(services_stats),
+#             "total_accesses": total_accesses,
+#             "period_days": 7,
+#             "services_stats": services_stats,
+#         }
+
+#     except Exception as e:
+#         print(f"[ERROR] 사용자 서비스 목록 조회 중 오류: {str(e)}")
+#         import traceback
+
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"사용자 서비스 목록 조회 중 오류가 발생했습니다: {str(e)}")
+
+
+# @monitoring_router.get("/user/services/stats", response_model=Dict)
+# async def get_sample(
+#     current_user: models.User = Depends(auth.get_current_user),
+#     db: Session = Depends(get_db),
+# ):
+#     return {
+#         "user_email": "test@test.com",
+#         "user_id": 1,
+#         "total_services": 1,
+#         "total_accesses": 1,
+#         "period_days": 7,
+#         "services_stats": [],
+#     }
+
+
+@monitoring_router.get("/user/services/{service_id}/detail")
+async def get_user_service_detail_stats(
+    service_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """현재 로그인한 사용자의 특정 서비스 상세 통계를 조회합니다."""
+    try:
+        print(f"[DEBUG] 사용자({current_user.email}) 서비스({service_id}) 상세 통계 조회 시작")
+
+        # 서비스 존재 여부 확인
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다.")
+
+        # 서비스 접근 권한 확인 (관리자 제외)
+        if not current_user.is_admin:
+            user_service = (
+                db.query(models.user_services)
+                .filter(
+                    models.user_services.c.service_id == service_id, models.user_services.c.user_id == current_user.id
+                )
+                .first()
+            )
+
+            if not user_service:
+                raise HTTPException(status_code=403, detail="이 서비스에 접근할 권한이 없습니다.")
+
+        # 현재 시간 및 기간 설정 (최근 7일)
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        period_start = today_start - timedelta(days=6)  # 7일(오늘 포함)
+
+        # 활성 사용자 기준 시간 (30분)
+        thirty_mins_ago = now - timedelta(minutes=30)
+
+        # 서비스 상태 확인
+        service_status_result = await check_service_status(service)
+
+        # 서비스 접속 로그 조회
+        service_logs = (
+            db.query(models.ServiceAccess)
+            .filter(
+                models.ServiceAccess.service_id == service_id,
+                models.ServiceAccess.user_id == current_user.id,
+                models.ServiceAccess.access_time >= period_start,
+            )
+            .order_by(models.ServiceAccess.access_time.desc())
+            .limit(50)  # 최대 50개 로그만 반환
+            .all()
+        )
+
+        formatted_logs = []
+        for log in service_logs:
+            log_type = "접속"
+            if log.end_time:
+                log_type = "종료"
+            elif log.last_activity and log.last_activity > log.access_time:
+                log_type = "활동"
+
+            formatted_logs.append(
+                {
+                    "timestamp": log.access_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "type": log_type,
+                    "session_id": log.session_id,
+                    "is_active": log.is_active,
+                    "access_id": log.id,
+                }
+            )
+
+        # 일별 접속 통계
+        daily_stats = []
+        for day in range(7):
+            day_start = today_start - timedelta(days=day)
+            day_end = day_start + timedelta(days=1)
+
+            # 하루 동안의 시간대별 통계
+            hourly_stats = []
+            for hour in range(24):
+                hour_start = day_start.replace(hour=hour)
+                hour_end = hour_start + timedelta(hours=1)
+
+                hour_accesses = (
+                    db.query(func.count(models.ServiceAccess.id))
+                    .filter(
+                        models.ServiceAccess.service_id == service_id,
+                        models.ServiceAccess.user_id == current_user.id,
+                        models.ServiceAccess.access_time >= hour_start,
+                        models.ServiceAccess.access_time < hour_end,
+                    )
+                    .scalar()
+                ) or 0
+
+                if hour_accesses > 0:
+                    hourly_stats.append({"hour": hour, "formatted_hour": f"{hour:02d}:00", "accesses": hour_accesses})
+
+            # 일별 총 접속 수 계산
+            day_accesses = (
+                db.query(func.count(models.ServiceAccess.id))
+                .filter(
+                    models.ServiceAccess.service_id == service_id,
+                    models.ServiceAccess.user_id == current_user.id,
+                    models.ServiceAccess.access_time >= day_start,
+                    models.ServiceAccess.access_time < day_end,
+                )
+                .scalar()
+            ) or 0
+
+            # 접속 기록이 있는 날짜만 추가
+            if day_accesses > 0:
+                daily_stats.append(
+                    {
+                        "date": day_start.strftime("%Y-%m-%d"),
+                        "day_of_week": day_start.strftime("%A"),
+                        "total_accesses": day_accesses,
+                        "hourly_stats": sorted(hourly_stats, key=lambda x: x["hour"]),
+                    }
+                )
+
+        # 전체 통계 정보
+        total_accesses = (
+            db.query(func.count(models.ServiceAccess.id))
+            .filter(models.ServiceAccess.service_id == service_id, models.ServiceAccess.user_id == current_user.id)
+            .scalar()
+        ) or 0
+
+        today_accesses = (
+            db.query(func.count(models.ServiceAccess.id))
+            .filter(
+                models.ServiceAccess.service_id == service_id,
+                models.ServiceAccess.user_id == current_user.id,
+                models.ServiceAccess.access_time >= today_start,
+            )
+            .scalar()
+        ) or 0
+
+        period_accesses = (
+            db.query(func.count(models.ServiceAccess.id))
+            .filter(
+                models.ServiceAccess.service_id == service_id,
+                models.ServiceAccess.user_id == current_user.id,
+                models.ServiceAccess.access_time >= period_start,
+            )
+            .scalar()
+        ) or 0
+
+        # 활성 세션 수
+        active_sessions_count = (
+            db.query(func.count(models.ServiceAccess.id))
+            .filter(
+                models.ServiceAccess.service_id == service_id,
+                models.ServiceAccess.user_id == current_user.id,
+                models.ServiceAccess.is_active == True,
+            )
+            .scalar()
+        ) or 0
+
+        # 전체 활성 사용자 수 (모든 사용자)
+        concurrent_users = (
+            db.query(func.count(func.distinct(models.ServiceAccess.user_id)))
+            .filter(
+                models.ServiceAccess.service_id == service_id,
+                models.ServiceAccess.user_id.isnot(None),
+                (models.ServiceAccess.is_active == True) | (models.ServiceAccess.last_activity >= thirty_mins_ago),
+            )
+            .scalar()
+        ) or 0
+
+        # 다른 활성 사용자 목록 조회 (현재 사용자 제외, 최대 5명)
+        other_active_users = (
+            db.query(models.User.email)
+            .join(
+                models.ServiceAccess,
+                and_(
+                    models.ServiceAccess.user_id == models.User.id,
+                    models.ServiceAccess.service_id == service_id,
+                    (models.ServiceAccess.is_active == True) | (models.ServiceAccess.last_activity >= thirty_mins_ago),
+                ),
+            )
+            .filter(models.User.id != current_user.id)
+            .distinct()
+            .limit(5)  # 최대 5명까지만 표시
+            .all()
+        )
+
+        other_active_users_emails = [u[0].split("@")[0] for u in other_active_users]  # 이메일에서 이름 부분만 추출
+
+        # 첫 접속 시간
+        first_access = (
+            db.query(models.ServiceAccess.access_time)
+            .filter(models.ServiceAccess.service_id == service_id, models.ServiceAccess.user_id == current_user.id)
+            .order_by(models.ServiceAccess.access_time.asc())
+            .first()
+        )
+
+        first_access_time = first_access[0].strftime("%Y-%m-%d %H:%M:%S") if first_access else None
+
+        # 마지막 접속 시간
+        last_access = (
+            db.query(models.ServiceAccess.access_time)
+            .filter(models.ServiceAccess.service_id == service_id, models.ServiceAccess.user_id == current_user.id)
+            .order_by(models.ServiceAccess.access_time.desc())
+            .first()
+        )
+
+        last_access_time = last_access[0].strftime("%Y-%m-%d %H:%M:%S") if last_access else None
+
+        return {
+            "service_id": service_id,
+            "service_name": service.name,
+            "status": service_status_result["status"],
+            "status_details": service_status_result["details"],
+            "user_email": current_user.email,
+            "total_stats": {
+                "all_time_accesses": total_accesses,
+                "today_accesses": today_accesses,
+                "period_accesses": period_accesses,
+                "active_sessions": active_sessions_count,
+                "first_access": first_access_time,
+                "last_access": last_access_time,
+                "concurrent_users": concurrent_users,  # 전체 동시 접속자 수
+                "other_active_users": other_active_users_emails,  # 다른 활성 사용자 목록 (최대 5명)
+            },
+            "daily_stats": daily_stats,
+            "access_logs": formatted_logs,
+            "period_days": 7,  # 기본 기간 추가
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"[ERROR] 사용자 서비스 상세 통계 조회 중 오류: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"사용자 서비스 상세 통계 조회 중 오류가 발생했습니다: {str(e)}")
 
 
 # 서비스 사용자별 접속 통계 조회 API

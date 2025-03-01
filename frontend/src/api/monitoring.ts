@@ -1,9 +1,12 @@
+import axios from 'axios';
 import instance from './axios';
-import axios, { AxiosError } from 'axios';
 
 // API 요청을 위한 공통 에러 처리 함수
-const handleApiError = <T>(error: any, defaultValue: T, errorMessage: string): T => {
-  console.error(errorMessage, error);
+const handleApiError = (error: unknown, defaultValue: any, errorPrefix: string = 'API 오류:') => {
+  console.error(`${errorPrefix}`, error);
+  if (axios.isAxiosError(error)) {
+    console.error(`API 오류 상세: ${error.response?.status} - ${error.message}`);
+  }
   return defaultValue;
 };
 
@@ -350,7 +353,7 @@ export const getServiceDetailedStats = async (serviceId: string) => {
 // 사용자별 접속 통계 조회 (관리자용)
 export const getUserAccessStats = async () => {
   try {
-    const response = await axios.get('/monitoring/users/stats');
+    const response = await instance.get('/monitoring/users/stats');
     return response.data;
   } catch (error) {
     return handleApiError(
@@ -371,7 +374,7 @@ export const getStatistics = async (type: 'daily' | 'user', id?: number, days: n
     }
     
     url += `?days=${days}`;
-    const response = await axios.get(url);
+    const response = await instance.get(url);
     return response.data;
   } catch (error) {
     return handleApiError(
@@ -385,7 +388,7 @@ export const getStatistics = async (type: 'daily' | 'user', id?: number, days: n
 // 서비스 삭제 함수
 export const deleteService = async (serviceId: string) => {
   try {
-    const response = await axios.delete(`/services/${serviceId}`);
+    const response = await instance.delete(`/services/${serviceId}`);
     return response.data;
   } catch (error) {
     // 에러를 상위 호출자에게 전파하여 적절한 처리 가능하도록 함
@@ -441,5 +444,156 @@ export const getDailyStatsForService = async (serviceId: string, days: number = 
       },
       `서비스 ${serviceId} 날짜별 통계 조회 실패:`
     );
+  }
+};
+
+// 서비스 인터페이스 정의
+interface Service {
+  id: string;
+  name: string;
+  description?: string;
+  url: string;
+  protocol?: string;
+  show_info?: boolean;
+}
+
+// 사용자 서비스 접속 통계 조회 API
+export const getUserServicesStats = async () => {
+  console.log(`[API 호출] 사용자 서비스 통계 요청 시작`);
+  
+  try {
+    const token = localStorage.getItem('token');
+    console.log(`[API 호출] 토큰 존재 여부: ${token ? '있음' : '없음'}`);
+    
+    // 1. 승인된 서비스 목록 가져오기
+    const response = await instance.get<Service[]>('/services/my-approved-services');
+    console.log(`[API 성공] 사용자 서비스 목록 응답:`, response.status);
+    
+    // 2. 서비스 상태 정보 가져오기
+    const statusResponse = await instance.get('/services/status');
+    console.log(`[API 성공] 서비스 상태 응답:`, statusResponse.status);
+    
+    // 3. 모니터링 통계 정보 가져오기
+
+    const url = '/monitoring/user/services/stats';
+    const monitoringResponse = await instance.get(url);
+    console.log(`[API 성공] 모니터링 통계 응답:`, monitoringResponse.status);
+    
+    // my-approved-services API 응답을 UserServicesData 형식으로 변환
+    const services = response.data || [];
+    const monitoringData = monitoringResponse.data || { services_stats: [] };
+    
+    // 변환된 데이터 형식 반환
+    return {
+      user_email: monitoringData.user_email || localStorage.getItem('email') || '',
+      user_id: monitoringData.user_id || 0,
+      is_admin: localStorage.getItem('isAdmin') === 'true',
+      total_services: services.length,
+      total_accesses: monitoringData.total_accesses || 0,
+      period_days: monitoringData.period_days || 7,
+      services_stats: services.map((service: Service) => {
+        // 서비스 상태 정보 가져오기
+        const serviceStatus = statusResponse.data[service.id] || { access: 'unavailable', running: 'offline' };
+        
+        // 모니터링 통계 정보 가져오기
+        const serviceStats = monitoringData.services_stats?.find((s: any) => s.service_id === service.id) || {};
+        
+        return {
+          service_id: service.id,
+          service_name: service.name,
+          description: service.description || '',
+          status: serviceStatus.running === 'online' ? 'running' : 'stopped',
+          today_accesses: serviceStats.today_accesses || 0,
+          total_accesses: serviceStats.total_accesses || 0,
+          total_period_accesses: serviceStats.period_accesses || 0,
+          active_sessions: serviceStats.active_sessions || 0,
+          concurrent_users: serviceStats.concurrent_users || 0,
+          total_active_users: serviceStats.total_active_users || 0,
+          last_access: serviceStats.last_access || null,
+          url: service.url,
+          has_active_session: serviceStatus.access === 'available'
+        };
+      })
+    };
+  } catch (error: unknown) {
+    console.error('[API 오류] 사용자 서비스 통계 조회 실패:', error);
+    if (axios.isAxiosError(error)) {
+      console.error(`[API 상세 오류] 상태 코드: ${error.response?.status}, 메시지: ${error.message}`);
+      console.error('[API 오류 상세]', error.response?.data);
+    }
+    
+    return handleApiError(
+      error,
+      {
+        user_email: '',
+        user_id: 0,
+        is_admin: false,
+        total_services: 0,
+        total_accesses: 0,
+        period_days: 7,
+        services_stats: []
+      },
+      '사용자 서비스 통계 조회 실패:'
+    );
+  }
+};
+
+// 사용자 서비스 상세 통계 조회 API
+export const getUserServiceDetailStats = async (serviceId: string) => {
+  console.log(`[API 호출] 사용자 서비스 상세 통계 요청: /monitoring/user/services/${serviceId}/detail`);
+  
+  try {
+    const response = await instance.get(`/monitoring/user/services/${serviceId}/detail`);
+    console.log(`[API 성공] 사용자 서비스 상세 통계 응답:`, response.status);
+    
+    // API 응답 데이터 반환
+    return {
+      service_id: serviceId,
+      service_name: response.data.service_name,
+      status: response.data.status as 'running' | 'stopped' | 'unknown',
+      status_details: response.data.status_details || '',
+      user_email: response.data.user_email,
+      total_stats: {
+        all_time_accesses: response.data.total_stats.all_time_accesses,
+        today_accesses: response.data.total_stats.today_accesses,
+        period_accesses: response.data.total_stats.period_accesses,
+        active_sessions: response.data.total_stats.active_sessions,
+        first_access: response.data.total_stats.first_access,
+        last_access: response.data.total_stats.last_access,
+        concurrent_users: response.data.total_stats.concurrent_users,
+        other_active_users: response.data.total_stats.other_active_users || []
+      },
+      daily_stats: response.data.daily_stats || [],
+      access_logs: response.data.access_logs || [],
+      period_days: response.data.period_days || 7
+    };
+  } catch (error: unknown) {
+    console.error(`[API 오류] 사용자 서비스 ${serviceId} 상세 통계 조회 실패:`, error);
+    if (axios.isAxiosError(error)) {
+      console.error(`[API 상세 오류] 상태 코드: ${error.response?.status}, 메시지: ${error.message}`);
+      console.error('[API 오류 상세]', error.response?.data);
+    }
+    
+    // 오류 발생 시 기본 데이터 반환
+    return {
+      service_id: serviceId,
+      service_name: '알 수 없는 서비스',
+      status: 'unknown' as const,
+      status_details: '서비스 정보를 가져올 수 없습니다',
+      user_email: localStorage.getItem('email') || '',
+      total_stats: {
+        all_time_accesses: 0,
+        today_accesses: 0,
+        period_accesses: 0,
+        active_sessions: 0,
+        first_access: null,
+        last_access: null,
+        concurrent_users: 0,
+        other_active_users: []
+      },
+      daily_stats: [],
+      access_logs: [],
+      period_days: 7
+    };
   }
 }; 

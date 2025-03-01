@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from '../api/axios';
+import instance from '../api/axios';
 
 interface Service {
     id: number;
@@ -68,7 +68,7 @@ const ServiceRequests: React.FC = () => {
     const checkAdminStatus = async () => {
         try {
             console.log('checkAdminStatus 호출됨');
-            const response = await axios.get('/verify-token');
+            const response = await instance.get('/verify-token');
             console.log('checkAdminStatus 응답:', response.data);
             setIsAdmin(response.data.is_admin);
             if (response.data.is_admin) {
@@ -81,7 +81,7 @@ const ServiceRequests: React.FC = () => {
 
     const fetchMyRequests = async () => {
         try {
-            const response = await axios.get('/services/my-service-requests');
+            const response = await instance.get('/services/my-service-requests');
             setMyRequests(response.data);
         } catch (err) {
             setError('요청 목록을 불러오는데 실패했습니다.');
@@ -90,7 +90,7 @@ const ServiceRequests: React.FC = () => {
 
     const fetchAvailableServices = async () => {
         try {
-            const response = await axios.get('/services/available-services');
+            const response = await instance.get('/services/available-services');
             setAvailableServices(response.data);
         } catch (err) {
             setError('사용 가능한 서비스 목록을 불러오는데 실패했습니다.');
@@ -99,7 +99,7 @@ const ServiceRequests: React.FC = () => {
 
     const fetchAllRequests = async () => {
         try {
-            const response = await axios.get('/services/service-requests');
+            const response = await instance.get('/services/service-requests');
             setAllRequests(response.data);
         } catch (err) {
             setError('전체 요청 목록을 불러오는데 실패했습니다.');
@@ -108,7 +108,7 @@ const ServiceRequests: React.FC = () => {
 
     const fetchServiceStatus = async (serviceId: number) => {
         try {
-            const response = await axios.get(`/services/${serviceId}/status`);
+            const response = await instance.get(`/services/${serviceId}/status`);
             setServiceStatuses(prev => ({
                 ...prev,
                 [serviceId]: response.data
@@ -133,7 +133,7 @@ const ServiceRequests: React.FC = () => {
 
     const handleServiceRequest = async (serviceId: number) => {
         try {
-            await axios.post(`/services/service-requests/${serviceId}`);
+            await instance.post(`/services/service-requests/${serviceId}`);
             setMessage({
                 type: 'success',
                 text: '서비스 접근 요청이 성공적으로 생성되었습니다.'
@@ -147,7 +147,7 @@ const ServiceRequests: React.FC = () => {
 
     const handleCancelRequest = async (requestId: number) => {
         try {
-            await axios.delete(`/services/service-requests/${requestId}`);
+            await instance.delete(`/services/service-requests/${requestId}`);
             setMessage({
                 type: 'success',
                 text: '서비스 요청이 취소되었습니다.'
@@ -161,7 +161,7 @@ const ServiceRequests: React.FC = () => {
 
     const handleApproveRequest = async (requestId: number) => {
         try {
-            await axios.put(`/services/service-requests/${requestId}/approve`);
+            await instance.put(`/services/service-requests/${requestId}/approve`);
             setMessage({
                 type: 'success',
                 text: '요청이 승인되었습니다.'
@@ -174,7 +174,7 @@ const ServiceRequests: React.FC = () => {
 
     const handleRejectRequest = async (requestId: number) => {
         try {
-            await axios.put(`/services/service-requests/${requestId}/reject`);
+            await instance.put(`/services/service-requests/${requestId}/reject`);
             setMessage({
                 type: 'success',
                 text: '요청이 거절되었습니다.'

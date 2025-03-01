@@ -1,4 +1,5 @@
 import axios from 'axios';
+// instance to service_instance
 
 // axios 기본 설정
 // 환경 변수에서 백엔드 URL 가져오기 또는 기본값 사용
@@ -154,34 +155,24 @@ export const refreshToken = async () => {
 instance.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
+    
     if (token) {
+      // 헤더에 토큰 설정
       config.headers.Authorization = `Bearer ${token}`;
-      console.log(`[요청] ${config.method?.toUpperCase()} ${config.url} - 인증 헤더 포함`);
       
-      // 자동 토큰 갱신 로직 비활성화 (불필요한 /refresh-token 요청 방지)
-      /* 
-      // 아래 코드는 모든 요청마다 토큰 만료 시간을 확인하고 갱신하는 로직
-      // 불필요한 요청을 줄이기 위해 비활성화
-      try {
-        const tokenParts = token.split('.');
-        if (tokenParts.length === 3) {
-          const payload = JSON.parse(atob(tokenParts[1]));
-          const exp = payload.exp;
-          const currentTime = Math.floor(Date.now() / 1000);
-          
-          // 토큰 만료 5분 전에 자동 갱신
-          if (exp && exp - currentTime < 300 && !isRefreshing) {
-            console.log('[DEBUG] 토큰 만료 5분 전, 자동 갱신 시도');
-            refreshToken().catch(err => console.error('[ERROR] 자동 토큰 갱신 실패:', err));
-          }
-        }
-      } catch (e) {
-        console.error('[ERROR] 토큰 검사 중 오류:', e);
-      }
-      */
+      // 쿠키에도 토큰 설정 (백엔드에서 쿠키를 통해 토큰을 찾을 수 있도록)
+      // 주의: 이 방식은 보안을 위해 httpOnly, secure 옵션이 필요하지만, 클라이언트에서는 설정할 수 없음
+      // 백엔드에서 토큰 탐지 알고리즘이 쿠키도 확인하도록 해야 함
+      document.cookie = `access_token=${token}; path=/; max-age=3600;`;  
+      
+      console.log(`[요청] ${config.method?.toUpperCase()} ${config.url} - 인증 헤더 및 쿠키 포함`);
+      
+      // x-access-token 헤더도 추가 (일부 백엔드 구현에서 사용)
+      config.headers['x-access-token'] = token;
       
       // 디버깅을 위한 로그
       console.log('[DEBUG] Sending request with token:', token.substring(0, 10) + '...');
+      console.log('[DEBUG] Authorization 헤더:', `Bearer ${token.substring(0, 10)}...`);
     } else {
       console.warn(`[요청] ${config.method?.toUpperCase()} ${config.url} - 인증 헤더 없음!`);
     }

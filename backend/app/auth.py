@@ -1348,3 +1348,10 @@ def remove_service_from_nginx(service_id: str):
         print(f"[ERROR] Nginx 설정 제거 중 오류 발생: {str(e)}")
         # 예외를 호출자에게 전파하여 적절히 처리할 수 있도록 함
         raise
+
+
+# 관리자 권한 확인 엔드포인트
+@auth_router.get("/auth/check-admin")
+async def check_admin(current_user: models.User = Depends(get_current_user)):
+    """현재 로그인한 사용자의 관리자 권한 여부를 확인합니다."""
+    return {"is_admin": current_user.is_admin}

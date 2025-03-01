@@ -38,11 +38,11 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         };
 
         checkToken();
-        // fetchPendingCount();
+        fetchPendingCount();
 
         // 30초마다 대기 요청 수 업데이트
-        // const interval = setInterval(fetchPendingCount, 30000);
-        // return () => clearInterval(interval);
+        const interval = setInterval(fetchPendingCount, 30000);
+        return () => clearInterval(interval);
     }, [navigate]);
 
     const handleLogout = () => {
@@ -50,14 +50,14 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         navigate('/login');
     };
 
-    // const fetchPendingCount = async () => {
-    //     try {
-    //         const response = await instance.get('/services/pending-requests/count');
-    //         setPendingCount(response.data.count);
-    //     } catch (err) {
-    //         console.error('Failed to fetch pending requests count:', err);
-    //     }
-    // };
+    const fetchPendingCount = async () => {
+        try {
+            const response = await instance.get('/services/pending-requests/count');
+            setPendingCount(response.data.count);
+        } catch (err) {
+            console.error('Failed to fetch pending requests count:', err);
+        }
+    };
 
     // 사용자 유형에 따른 메뉴 아이템 설정
     const getMenuItems = () => {
@@ -65,6 +65,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             return [
                 { path: '/dashboard', label: '서비스 목록', icon: '📋' },
                 { path: '/monitoring', label: '서비스 모니터링', icon: '📊' },
+                { path: '/faq', label: 'FAQ 관리', icon: '❓' },
                 { path: '/users', label: '유저 관리', icon: '👥' },
                 { path: '/users/bulk-add', label: '유저 일괄 추가', icon: '📥' },
                 { path: '/service-requests', label: '서비스 요청 관리', icon: '📨' },
@@ -81,7 +82,8 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         }
         return [
             { path: '/dashboard', label: '서비스 목록', icon: '📋' },
-            { path: '/monitoring', label: '서비스 모니터링', icon: '📊' },
+            { path: '/my-monitoring', label: '서비스 모니터링', icon: '📊' },
+            { path: '/faq', label: 'FAQ 보기', icon: '❓' },
             { 
                 path: '/service-requests', 
                 label: `서비스 요청${pendingCount > 0 ? ` (${pendingCount})` : ''}`, 
@@ -90,6 +92,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             },
         ];
     };
+
 
     return (
         <div className="flex h-screen bg-gray-100">

@@ -9,7 +9,7 @@ from .auth import SECRET_KEY, ALGORITHM
 from datetime import datetime, timedelta
 from .models import RequestStatus
 from pydantic import BaseModel
-from sqlalchemy import update, and_
+from sqlalchemy import update, and_, or_
 from .models import user_services  # user_services 테이블 import
 import json
 import socket
@@ -244,6 +244,63 @@ def create_test_data():
                 db.add(service)
                 print(f"테스트 서비스 생성: {service_data['name']}")
 
+        # 3. 테스트 FAQ 데이터 생성
+        test_faqs = [
+            {
+                "id": "faq1",
+                "title": "서비스 포털 이용 방법",
+                "content": "서비스 포털은 운영자가 등록한 API 서비스에 접근할 수 있는 플랫폼입니다. 로그인 후 대시보드에서 원하는 서비스를 선택하여 이용할 수 있습니다.",
+                "category": "일반",
+                "is_published": True,
+                "author": "관리자",
+                "author_id": f"admin@{ALLOWED_DOMAIN}",
+                "post_type": models.PostType.FAQ,
+                "status": models.FaqStatus.NOT_APPLICABLE,
+            },
+            {
+                "id": "faq2",
+                "title": "계정 생성 방법",
+                "content": "계정 생성은 회원가입 페이지에서 이메일(@gmail.com)과 비밀번호를 입력하여 진행할 수 있습니다. 추가 정보를 입력하고 가입 버튼을 클릭하면 완료됩니다.",
+                "category": "계정",
+                "is_published": True,
+                "author": "관리자",
+                "author_id": f"admin@{ALLOWED_DOMAIN}",
+                "post_type": models.PostType.FAQ,
+                "status": models.FaqStatus.NOT_APPLICABLE,
+            },
+            {
+                "id": "notice1",
+                "title": "시스템 점검 안내",
+                "content": "2023년 6월 15일 오전 2시부터 6시까지 정기 시스템 점검이 예정되어 있습니다. 해당 시간에는 서비스 이용이 제한될 수 있습니다.",
+                "category": "일반",
+                "is_published": True,
+                "author": "시스템 관리자",
+                "author_id": f"admin@{ALLOWED_DOMAIN}",
+                "post_type": models.PostType.NOTICE,
+                "status": models.FaqStatus.NOT_APPLICABLE,
+            },
+            {
+                "id": "inquiry1",
+                "title": "서비스 접근 권한 문의",
+                "content": "서비스에 접근할 수 있는 권한을 어떻게 얻을 수 있나요?",
+                "category": "권한",
+                "is_published": True,
+                "author": "테스트 사용자",
+                "author_id": f"test1@{ALLOWED_DOMAIN}",
+                "post_type": models.PostType.INQUIRY,
+                "status": models.FaqStatus.COMPLETED,
+                "response": "서비스 이용을 원하시면 대시보드에서 해당 서비스의 '권한 요청' 버튼을 클릭하시면 됩니다. 관리자 승인 후 이용하실 수 있습니다.",
+            },
+        ]
+
+        for faq_data in test_faqs:
+            # 이미 존재하는 FAQ 확인
+            existing_faq = db.query(models.FAQ).filter(models.FAQ.id == faq_data["id"]).first()
+            if not existing_faq:
+                faq = models.FAQ(**faq_data, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+                db.add(faq)
+                print(f"테스트 FAQ 생성: {faq_data['title']}")
+
         db.commit()
         print("테스트 데이터가 성공적으로 생성되었습니다.")
 
@@ -398,11 +455,6 @@ async def get_service_requests(
     return requests
 
 
-# 상태 업데이트를 위한 요청 모델들 추가
-class ServiceRequestUpdate(BaseModel):
-    status: str
-
-
 class UserStatusUpdate(BaseModel):
     status: models.UserStatus
 
@@ -410,52 +462,6 @@ class UserStatusUpdate(BaseModel):
 class ServiceUserAdd(BaseModel):
     emails: str
     showInfo: bool = False
-
-
-# 관리자의 서비스 요청 처리
-@app.put("/service-requests/{request_id}")
-async def update_service_request(
-    request_id: int,
-    request_update: ServiceRequestUpdate,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    if request_update.status not in ["approved", "rejected", "pending"]:
-        raise HTTPException(status_code=400, detail="Invalid status value")
-
-    db_request = db.query(models.ServiceRequest).filter(models.ServiceRequest.id == request_id).first()
-    if not db_request:
-        raise HTTPException(status_code=404, detail="Request not found")
-
-    try:
-        if request_update.status == "approved":
-            if db_request.status == RequestStatus.PENDING:
-                # 서비스 접근 요청 승인 시 user_services에 추가
-                stmt = user_services.insert().values(
-                    service_id=db_request.service_id, user_id=db_request.user_id, show_info=False
-                )
-                db.execute(stmt)
-            elif db_request.status == RequestStatus.REMOVE_PENDING:
-                # 서비스 제거 요청 승인 시 user_services에서 삭제
-                stmt = user_services.delete().where(
-                    and_(
-                        user_services.c.service_id == db_request.service_id,
-                        user_services.c.user_id == db_request.user_id,
-                    )
-                )
-                db.execute(stmt)
-
-        db_request.status = RequestStatus(request_update.status)
-        db_request.response_date = datetime.utcnow()
-        db.commit()
-
-        return {"status": "success", "message": f"Request {request_update.status}"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # 사용자 목록 조회 (관리자용)
@@ -498,27 +504,6 @@ async def update_user(
 
     db.commit()
     return {"status": "success"}
-
-
-# 사용자의 서비스 요청 목록 조회
-@app.get("/my-service-requests", response_model=List[schemas.ServiceRequestWithDetails])
-async def get_my_service_requests(
-    current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
-):
-    requests = db.query(models.ServiceRequest).filter(models.ServiceRequest.user_id == current_user.id).all()
-
-    # URL 속성 추가
-    for request in requests:
-        # 서비스 요청의 서비스 객체에 url 추가
-        if request.service:
-            request.service.url = request.service.full_url
-
-        # 사용자 객체의 서비스 객체들에도 url 추가
-        if request.user and request.user.services:
-            for service in request.user.services:
-                service.url = service.full_url
-
-    return requests
 
 
 # 요청 가능한 서비스 목록 조회 수정
@@ -950,3 +935,183 @@ async def update_user_service_permissions(
 
     db.commit()
     return results
+
+
+# FAQ 관련 API 엔드포인트
+@app.get("/faqs", response_model=List[schemas.Faq])
+async def get_faqs(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    """FAQ 목록을 조회합니다."""
+    # 관리자는 모든 FAQ를 조회할 수 있음
+    if current_user.is_admin:
+        faqs = db.query(models.FAQ).all()
+    else:
+        # 일반 사용자는 공개된 FAQ와 본인이 작성한 질의만 조회 가능
+        faqs = (
+            db.query(models.FAQ)
+            .filter(
+                or_(
+                    models.FAQ.is_published == True,
+                    and_(models.FAQ.post_type == models.PostType.INQUIRY, models.FAQ.author_id == current_user.email),
+                )
+            )
+            .all()
+        )
+
+    return faqs
+
+
+@app.get("/faqs/my", response_model=List[schemas.Faq])
+async def get_my_faqs(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    """현재 사용자가 작성한 FAQ 목록을 조회합니다."""
+    faqs = db.query(models.FAQ).filter(models.FAQ.author_id == current_user.email).all()
+    return faqs
+
+
+@app.get("/faqs/{faq_id}", response_model=schemas.Faq)
+async def get_faq(
+    faq_id: str, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """특정 FAQ를 조회합니다."""
+    faq = db.query(models.FAQ).filter(models.FAQ.id == faq_id).first()
+    if not faq:
+        raise HTTPException(status_code=404, detail="FAQ를 찾을 수 없습니다.")
+
+    # 비공개 FAQ는 작성자 또는 관리자만 조회 가능
+    if not faq.is_published and not current_user.is_admin and faq.author_id != current_user.email:
+        raise HTTPException(status_code=403, detail="이 FAQ를 조회할 권한이 없습니다.")
+
+    return faq
+
+
+@app.post("/faqs", response_model=schemas.Faq)
+async def create_faq(
+    faq: schemas.FaqCreate, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """새로운 FAQ를 생성합니다."""
+    # FAQ 및 공지사항은 관리자만 작성 가능
+    if faq.post_type in [models.PostType.FAQ, models.PostType.NOTICE] and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="FAQ 및 공지사항은 관리자만 작성할 수 있습니다.")
+
+    # 서비스 ID가 있는 경우 서비스 존재 여부 확인
+    service_id = None
+    if faq.service_id and faq.service_id.strip():  # 빈 문자열 체크
+        service_id = faq.service_id
+        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다.")
+
+    # 새 FAQ 생성
+    new_faq = models.FAQ(
+        id=str(uuid.uuid4())[:8],
+        title=faq.title,
+        content=faq.content,
+        category=faq.category,
+        is_published=faq.is_published,
+        service_id=service_id,  # None 또는 유효한 서비스 ID
+        author=current_user.email.split("@")[0],
+        author_id=current_user.email,
+        post_type=faq.post_type,
+        status=faq.status,
+        response=faq.response,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    try:
+        db.add(new_faq)
+        db.commit()
+        db.refresh(new_faq)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"FAQ 생성 중 오류가 발생했습니다: {str(e)}")
+
+    # service_id가 None인 경우 유효성 검증 오류 방지
+    if new_faq.service_id is None:
+        # 필요한 경우 처리 로직 추가
+        pass
+
+    return new_faq
+
+
+@app.put("/faqs/{faq_id}", response_model=schemas.Faq)
+async def update_faq(
+    faq_id: str,
+    faq: schemas.FaqUpdate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """FAQ를 수정합니다."""
+    db_faq = db.query(models.FAQ).filter(models.FAQ.id == faq_id).first()
+    if not db_faq:
+        raise HTTPException(status_code=404, detail="FAQ를 찾을 수 없습니다.")
+
+    # 관리자가 아니고 작성자도 아닌 경우 수정 불가
+    if not current_user.is_admin and db_faq.author_id != current_user.email:
+        raise HTTPException(status_code=403, detail="이 FAQ를 수정할 권한이 없습니다.")
+
+    # 일반 사용자는 FAQ 및 공지사항 유형으로 변경 불가
+    if faq.post_type and faq.post_type in [models.PostType.FAQ, models.PostType.NOTICE] and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="FAQ 및 공지사항 유형으로 변경할 권한이 없습니다.")
+
+    # 서비스 ID 처리 - 다양한 경우 처리
+    # 1. 명시적인 빈 문자열이나 공백만 있는 경우 None으로 설정
+    # 2. None인 경우도 유효한 값으로 처리해서 기존 service_id를 덮어씀
+    if hasattr(faq, "service_id"):
+        if (
+            faq.service_id is None
+            or faq.service_id == ""
+            or (isinstance(faq.service_id, str) and not faq.service_id.strip())
+        ):
+            # 명시적으로 None으로 설정하여 기존 서비스 연결 제거
+            faq.service_id = None
+            print(f"[DEBUG] Service ID 명시적으로 None으로 설정")
+        elif faq.service_id:
+            # 유효한 서비스 ID가 있는 경우 존재하는지 확인
+            service = db.query(models.Service).filter(models.Service.id == faq.service_id).first()
+            if not service:
+                raise HTTPException(status_code=404, detail="서비스를 찾을 수 없습니다.")
+            print(f"[DEBUG] 유효한 Service ID: {faq.service_id}")
+
+    # 필드 업데이트 - service_id가 명시적으로 None이면 포함하도록 함
+    update_data = faq.dict(exclude_unset=False if faq.service_id is None else True)
+    print(f"[DEBUG] 업데이트할 데이터: {update_data}")
+
+    for key, value in update_data.items():
+        setattr(db_faq, key, value)
+
+    # 업데이트 시간 갱신
+    db_faq.updated_at = datetime.utcnow()
+
+    try:
+        db.commit()
+        db.refresh(db_faq)
+        print(f"[DEBUG] 업데이트 후 DB의 service_id: {db_faq.service_id}")
+    except Exception as e:
+        db.rollback()
+        print(f"[ERROR] FAQ 업데이트 중 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"FAQ 업데이트 중 오류가 발생했습니다: {str(e)}")
+
+    # 응답 데이터 구성 - service 필드가 None인 경우 처리
+    if db_faq.service_id is None:
+        # 명시적으로 관계 객체를 None으로 설정할 수 있습니다
+        db_faq.service = None
+
+    return db_faq
+
+
+@app.delete("/faqs/{faq_id}")
+async def delete_faq(
+    faq_id: str, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """FAQ를 삭제합니다."""
+    db_faq = db.query(models.FAQ).filter(models.FAQ.id == faq_id).first()
+    if not db_faq:
+        raise HTTPException(status_code=404, detail="FAQ를 찾을 수 없습니다.")
+
+    # 관리자가 아니고 작성자도 아닌 경우 삭제 불가
+    if not current_user.is_admin and db_faq.author_id != current_user.email:
+        raise HTTPException(status_code=403, detail="이 FAQ를 삭제할 권한이 없습니다.")
+
+    db.delete(db_faq)
+    db.commit()
+    return {"status": "success", "message": "FAQ가 삭제되었습니다."}

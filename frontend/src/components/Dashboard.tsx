@@ -5,6 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { FaStar, FaRegStar, FaEye, FaExternalLinkAlt, FaEdit, FaTrash, FaChartLine, FaSync } from 'react-icons/fa';
 import Monitoring from './Monitoring';
 import { recordServiceAccess, sendHeartbeat, endServiceAccess } from '../api/monitoring';
+import MarkdownRenderer from './MarkdownRenderer';
+import ServiceDocumentation from './ServiceDocumentation';
+import TokenManager from './TokenManager';
 
 interface Service {
     id: string;
@@ -273,14 +276,21 @@ interface ServiceDetailModalProps {
     onClose: () => void;
 }
 
-const ServiceDetailModal = ({ service, isOpen, onClose }: ServiceDetailModalProps) => {
+const ServiceDetailModal: React.FC<ServiceDetailModalProps> = ({ service, isOpen, onClose }) => {
     const [groups, setGroups] = useState<ServiceGroup[]>([]);
-
+    const [isAdmin, setIsAdmin] = useState<boolean>(false);
+    
     useEffect(() => {
         if (isOpen && service) {
             fetchGroups();
+            checkAdminStatus();
         }
     }, [isOpen, service]);
+
+    const checkAdminStatus = () => {
+        const admin = localStorage.getItem('isAdmin') === 'true';
+        setIsAdmin(admin);
+    };
 
     const fetchGroups = async () => {
         try {
@@ -334,7 +344,14 @@ const ServiceDetailModal = ({ service, isOpen, onClose }: ServiceDetailModalProp
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold mb-2">설명</h3>
-                        <p className="text-gray-700 whitespace-pre-wrap">{service.description}</p>
+                        {service.description && (
+                            <div className="markdown-content-wrapper">
+                                <MarkdownRenderer content={service.description} />
+                            </div>
+                        )}
+                        {!service.description && (
+                            <p className="text-gray-700">설명이 없습니다.</p>
+                        )}
                     </div>
                     {service.show_info && (
                     <div>
@@ -348,6 +365,18 @@ const ServiceDetailModal = ({ service, isOpen, onClose }: ServiceDetailModalProp
                             <span className="px-2 py-1 text-sm rounded-full bg-blue-100 text-blue-800">
                                 {groupName}
                             </span>
+                        </div>
+                    )}
+                    
+                    {isAdmin && (
+                        <div className="mt-6 pt-6 border-t">
+                            <h3 className="text-lg font-semibold mb-2">관리자 옵션</h3>
+                            <ServiceDocumentation 
+                                serviceId={service.id}
+                                initialContent={service.description}
+                                isAdmin={true}
+                                className="mt-2"
+                            />
                         </div>
                     )}
                 </div>
@@ -1238,7 +1267,7 @@ const Dashboard = () => {
     });
     const itemsPerPage = 10;
     
-    // 모니터링 탭 상태 추가
+    // 모니터링 탭 상태 수정 - FAQ 탭 제거
     const [activeTab, setActiveTab] = useState<'services' | 'monitoring'>('services');
 
     // 사용자 그룹 관리 상태 추가
@@ -1997,6 +2026,76 @@ const Dashboard = () => {
         initializeMonitoring();
     }, []);
 
+    // 토큰 갱신 버튼 클릭 핸들러 함수 개선
+    const handleTokenRefresh = async () => {
+        try {
+            const refreshToken = localStorage.getItem('refreshToken');
+            if (!refreshToken) {
+                alert('리프레시 토큰이 없습니다. 다시 로그인해주세요.');
+                navigate('/login');
+                return;
+            }
+            
+            // 버튼 상태 변경
+            const button = document.getElementById('token-refresh-button') as HTMLButtonElement;
+            if (button) {
+                button.innerHTML = '<span class="animate-spin inline-block mr-2">⟳</span> 갱신 중...';
+                button.disabled = true;
+            }
+            
+            // 갱신 요청 시작
+            console.log('[DEBUG] 토큰 갱신 요청 시작');
+            
+            // API 요청
+            const response = await instance.post('/refresh-token', { refresh_token: refreshToken });
+            
+            // 토큰 확인
+            let accessToken;
+            if (response.data.access_token) {
+                accessToken = response.data.access_token;
+            } else if (typeof response.data === 'string') {
+                accessToken = response.data;
+            } else {
+                throw new Error('토큰 갱신 응답 형식이 올바르지 않습니다.');
+            }
+            
+            // 토큰 저장
+            localStorage.setItem('token', accessToken);
+            
+            // 쿠키에도 저장 (백엔드에서 쿠키로도 토큰을 찾을 수 있도록)
+            document.cookie = `access_token=${accessToken}; path=/; max-age=3600;`;
+            
+            console.log('[DEBUG] 새 액세스 토큰 저장 완료');
+            
+            // 버튼 상태 복원
+            if (button) {
+                button.innerHTML = '<svg class="mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg> 토큰 갱신됨';
+                button.className = "flex items-center bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-sm";
+                
+                // 2초 후 원래 상태로 복원
+                setTimeout(() => {
+                    if (button) {
+                        button.innerHTML = '<svg class="mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg> 토큰 갱신';
+                        button.className = "flex items-center bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded text-sm";
+                        button.disabled = false;
+                    }
+                }, 2000);
+            }
+            
+            // 서비스 목록 새로고침
+            await fetchServices();
+            
+            // 성공 메시지
+            alert('토큰이 성공적으로 갱신되었습니다.');
+        } catch (error) {
+            console.error('토큰 갱신 실패:', error);
+            alert('토큰 갱신에 실패했습니다. 다시 로그인해주세요.');
+            
+            // 로그인 페이지로 이동
+            navigate('/login');
+        }
+    };
+
     return (
         <div className="container mx-auto px-4 py-8">
             {loading ? (
@@ -2008,138 +2107,13 @@ const Dashboard = () => {
                     <div className="flex justify-between items-center mb-6">
                         <div className="flex items-center">
                             <h1 className="text-2xl font-bold text-gray-800 mr-4">서비스 포털</h1>
-                            <button
-                                onClick={async () => {
-                                    try {
-                                        const refreshToken = localStorage.getItem('refreshToken');
-                                        if (!refreshToken) {
-                                            alert('리프레시 토큰이 없습니다. 다시 로그인해주세요.');
-                                            navigate('/login');
-                                            return;
-                                        }
-                                        
-                                        console.log('[DEBUG] 대시보드에서 토큰 갱신 요청 시작');
-                                        
-                                        // 로딩 상태 표시
-                                        const button = document.getElementById('token-refresh-button') as HTMLButtonElement;
-                                        if (button) {
-                                            button.innerHTML = '<span class="animate-spin inline-block mr-2">⟳</span> 갱신 중...';
-                                            button.disabled = true;
-                                        }
-                                        
-                                        // 다양한 방식으로 시도
-                                        let response;
-                                        let error;
-                                        
-                                        // 1. JSON 형식으로 시도
-                                        try {
-                                            response = await instance.post('/refresh-token', { refresh_token: refreshToken });
-                                            console.log('[DEBUG] JSON 형식 토큰 갱신 성공:', response.data);
-                                        } catch (jsonError) {
-                                            console.log('[DEBUG] JSON 형식 요청 실패, 다른 방식 시도:', jsonError);
-                                            error = jsonError;
-                                            
-                                            // 2. 텍스트 형식으로 시도
-                                            try {
-                                                response = await instance.post('/refresh-token', refreshToken, {
-                                                    headers: {
-                                                        'Content-Type': 'text/plain',
-                                                    }
-                                                });
-                                                console.log('[DEBUG] 텍스트 형식 토큰 갱신 성공:', response.data);
-                                            } catch (textError) {
-                                                console.log('[DEBUG] 텍스트 형식 요청 실패, 다른 방식 시도:', textError);
-                                                error = textError;
-                                                
-                                                // 3. URL 인코딩 형식으로 시도
-                                                try {
-                                                    response = await instance.post('/refresh-token', 
-                                                        `refresh_token=${encodeURIComponent(refreshToken)}`, {
-                                                        headers: {
-                                                            'Content-Type': 'application/x-www-form-urlencoded',
-                                                        }
-                                                    });
-                                                    console.log('[DEBUG] URL 인코딩 형식 토큰 갱신 성공:', response.data);
-                                                } catch (formError) {
-                                                    console.log('[DEBUG] URL 인코딩 형식 요청 실패, 다른 방식 시도:', formError);
-                                                    
-                                                    // 4. 쿼리 파라미터 방식 시도
-                                                    try {
-                                                        response = await instance.post(`/refresh-token?refresh_token=${encodeURIComponent(refreshToken)}`);
-                                                        console.log('[DEBUG] 쿼리 파라미터 형식 토큰 갱신 성공:', response.data);
-                                                    } catch (queryError) {
-                                                        console.log('[DEBUG] 쿼리 파라미터 형식 요청 실패:', queryError);
-                                                        error = queryError;
-                                                        throw error; // 모든 방식 실패 시 에러 발생
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        
-                                        if (!response || !response.data) {
-                                            throw new Error('토큰 갱신 응답에 데이터가 없습니다.');
-                                        }
-                                        
-                                        let accessToken;
-                                        
-                                        // 응답 형식에 따라 액세스 토큰 추출
-                                        if (response.data.access_token) {
-                                            accessToken = response.data.access_token;
-                                        } else if (typeof response.data === 'string' && response.data.includes('access_token')) {
-                                            try {
-                                                const jsonData = JSON.parse(response.data);
-                                                accessToken = jsonData.access_token;
-                                            } catch (e) {
-                                                // 문자열에서 액세스 토큰 추출 시도
-                                                const match = response.data.match(/access_token[\"'\s:=]+([^\"'\s,}]+)/);
-                                                if (match && match[1]) {
-                                                    accessToken = match[1];
-                                                }
-                                            }
-                                        } else if (typeof response.data === 'string' && response.data.startsWith('eyJ')) {
-                                            // 응답이 직접 JWT 토큰인 경우
-                                            accessToken = response.data;
-                                        }
-                                        
-                                        if (!accessToken) {
-                                            console.error('[ERROR] 응답에서 액세스 토큰을 찾을 수 없습니다:', response.data);
-                                            throw new Error('액세스 토큰을 찾을 수 없습니다');
-                                        }
-                                        
-                                        localStorage.setItem('token', accessToken);
-                                        console.log('[DEBUG] 새 액세스 토큰 저장 완료:', accessToken.substring(0, 10) + '...');
-                                        
-                                        alert('토큰이 성공적으로 갱신되었습니다.');
-                                        
-                                        // 버튼 상태 복원
-                                        if (button) {
-                                            button.innerHTML = '<FaSync class="mr-1" /> 토큰 갱신';
-                                            button.disabled = false;
-                                        }
-                                        
-                                        // 서비스 목록 새로고침
-                                        await fetchServices();
-                                    } catch (error) {
-                                        console.error('토큰 갱신 실패:', error);
-                                        alert('토큰 갱신에 실패했습니다. 다시 로그인해주세요.');
-                                        navigate('/login');
-                                    }
-                                }}
-                                className="flex items-center bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded text-sm"
-                                title="토큰 갱신"
-                                id="token-refresh-button"
-                            >
-                                <FaSync className="mr-1" /> 토큰 갱신
-                            </button>
+                            <TokenManager />
                         </div>
                         <div className="flex items-center">
                     {isAdmin ? (
                                 <>
                                     <button
-                                        onClick={() => {
-                                            setEditingService(null);
-                                            setShowServiceModal(true);
-                                        }}
+                                        onClick={() => navigate('/services/bulk-add')}
                                         className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded mr-2"
                                     >
                                         서비스 추가
@@ -2170,214 +2144,251 @@ const Dashboard = () => {
                         </div>
                     </div>
 
-                    {/* 필터링 및 검색 UI */}
-                    <div className="mb-6 flex flex-wrap gap-4">
-                        <div className="flex-1 min-w-[200px]">
-                                            <input
-                                                type="text"
-                                placeholder="서비스 검색..."
-                                                value={searchTerm}
-                                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full px-4 py-2 border rounded-lg"
-                                            />
-                        </div>
-                        <div className="w-full md:w-auto">
-                                            <select
-                                value={selectedGroup}
-                                onChange={(e) => setSelectedGroup(e.target.value)}
-                                className="w-full md:w-auto px-4 py-2 border rounded-lg"
-                            >
-                                <option value="">모든 그룹</option>
-                                {isAdmin ? (
-                                    // 관리자용 그룹 목록
-                                    groups.map(group => (
-                                        <option key={group.id} value={group.id}>{group.name}</option>
-                                    ))
-                                ) : (
-                                    // 일반 사용자용 그룹 목록 (사용자 그룹 + 관리자 그룹)
-                                    <>
-                                        {userGroups.map(group => (
-                                            <option key={group.id} value={group.id}>{group.name} (내 그룹)</option>
-                                        ))}
-                                        {groups.map(group => (
-                                            <option key={group.id} value={group.id}>{group.name}</option>
-                                        ))}
-                                    </>
-                                )}
-                                            </select>
-                                        </div>
-                        <div className="w-full md:w-auto">
-                            <select
-                                value={statusFilter}
-                                onChange={(e) => setStatusFilter(e.target.value as 'all' | 'online' | 'offline')}
-                                className="w-full md:w-auto px-4 py-2 border rounded-lg"
-                            >
-                                <option value="all">모든 상태</option>
-                                <option value="">모든 상태</option>
-                                <option value="online">온라인</option>
-                                <option value="offline">오프라인</option>
-                            </select>
-                                    </div>
-                        <div className="w-full md:w-auto">
+                    {/* 탭 네비게이션 수정 - FAQ 탭 제거 */}
+                    <div className="border-b border-gray-200 mb-6">
+                        <nav className="flex">
                             <button
-                                onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
-                                className={`w-full md:w-auto px-4 py-2 border rounded-lg flex items-center justify-center ${
-                                    showFavoritesOnly ? 'bg-yellow-100 border-yellow-300' : ''
+                                className={`px-4 py-2 font-medium text-sm ${
+                                    activeTab === 'services'
+                                        ? 'border-b-2 border-blue-500 text-blue-600'
+                                        : 'text-gray-500 hover:text-gray-700'
                                 }`}
+                                onClick={() => setActiveTab('services')}
                             >
-                                <FaStar className={`mr-2 ${showFavoritesOnly ? 'text-yellow-500' : 'text-gray-400'}`} />
-                                즐겨찾기만
+                                서비스
                             </button>
+                            <button
+                                className={`px-4 py-2 font-medium text-sm ${
+                                    activeTab === 'monitoring'
+                                        ? 'border-b-2 border-blue-500 text-blue-600'
+                                        : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                                onClick={() => setActiveTab('monitoring')}
+                            >
+                                모니터링
+                            </button>
+                        </nav>
+                    </div>
+
+                    {/* 서비스 탭 컨텐츠 */}
+                    {activeTab === 'services' && (
+                        <>
+                            {/* 필터링 및 검색 UI */}
+                            <div className="mb-6 flex flex-wrap gap-4">
+                                <div className="flex-1 min-w-[200px]">
+                                    <input
+                                        type="text"
+                                        placeholder="서비스 검색..."
+                                        value={searchTerm}
+                                        onChange={(e) => setSearchTerm(e.target.value)}
+                                        className="w-full px-4 py-2 border rounded-lg"
+                                    />
+                                </div>
+                                <div className="w-full md:w-auto">
+                                    <select
+                                        value={selectedGroup}
+                                        onChange={(e) => setSelectedGroup(e.target.value)}
+                                        className="w-full md:w-auto px-4 py-2 border rounded-lg"
+                                    >
+                                        <option value="">모든 그룹</option>
+                                        {isAdmin ? (
+                                            // 관리자용 그룹 목록
+                                            groups.map(group => (
+                                                <option key={group.id} value={group.id}>{group.name}</option>
+                                            ))
+                                        ) : (
+                                            // 일반 사용자용 그룹 목록 (사용자 그룹 + 관리자 그룹)
+                                            <>
+                                                {userGroups.map(group => (
+                                                    <option key={group.id} value={group.id}>{group.name} (내 그룹)</option>
+                                                ))}
+                                                {groups.map(group => (
+                                                    <option key={group.id} value={group.id}>{group.name}</option>
+                                                ))}
+                                            </>
+                                        )}
+                                    </select>
+                                </div>
+                                <div className="w-full md:w-auto">
+                                    <select
+                                        value={statusFilter}
+                                        onChange={(e) => setStatusFilter(e.target.value as 'all' | 'online' | 'offline')}
+                                        className="w-full md:w-auto px-4 py-2 border rounded-lg"
+                                    >
+                                        <option value="all">모든 상태</option>
+                                        <option value="online">온라인</option>
+                                        <option value="offline">오프라인</option>
+                                    </select>
+                                </div>
+                                <div className="w-full md:w-auto">
+                                    <button
+                                        onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                                        className={`w-full md:w-auto px-4 py-2 border rounded-lg flex items-center justify-center ${
+                                            showFavoritesOnly ? 'bg-yellow-100 border-yellow-300' : ''
+                                        }`}
+                                    >
+                                        <FaStar className={`mr-2 ${showFavoritesOnly ? 'text-yellow-500' : 'text-gray-400'}`} />
+                                        즐겨찾기만
+                                    </button>
                                 </div>
                             </div>
 
-                    {/* 사용자 그룹 관리 UI (일반 사용자용) */}
-                    {!isAdmin && userGroups.length > 0 && (
-                        <div className="mb-6">
-                            <h2 className="text-xl font-semibold mb-3">내 그룹 관리</h2>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                {userGroups.map(group => (
-                                    <div key={group.id} className="bg-white rounded-lg shadow-md p-4">
-                                        <div className="flex justify-between items-start">
-                                            <h3 className="font-medium text-lg">{group.name}</h3>
-                                            <div className="flex">
-                                                <button
-                                                    onClick={() => {
-                                                        setEditingUserGroup(group);
-                                                        setShowUserGroupModal(true);
-                                                    }}
-                                                    className="text-blue-500 hover:text-blue-700 mr-2"
-                                                >
-                                                    <FaEdit />
-                                                </button>
-                                                <button
-                                                    onClick={() => handleDeleteUserGroup(group.id)}
-                                                    className="text-red-500 hover:text-red-700"
-                                                >
-                                                    <FaTrash />
-                                                </button>
+                            {/* 사용자 그룹 관리 UI (일반 사용자용) */}
+                            {!isAdmin && userGroups.length > 0 && (
+                                <div className="mb-6">
+                                    <h2 className="text-xl font-semibold mb-3">내 그룹 관리</h2>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                        {userGroups.map(group => (
+                                            <div key={group.id} className="bg-white rounded-lg shadow-md p-4">
+                                                <div className="flex justify-between items-start">
+                                                    <h3 className="font-medium text-lg">{group.name}</h3>
+                                                    <div className="flex">
+                                                        <button
+                                                            onClick={() => {
+                                                                setEditingUserGroup(group);
+                                                                setShowUserGroupModal(true);
+                                                            }}
+                                                            className="text-blue-500 hover:text-blue-700 mr-2"
+                                                        >
+                                                            <FaEdit />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDeleteUserGroup(group.id)}
+                                                            className="text-red-500 hover:text-red-700"
+                                                        >
+                                                            <FaTrash />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <p className="text-sm text-gray-600 mt-1">
+                                                    {group.description || "설명 없음"}
+                                                </p>
                                             </div>
-                                        </div>
-                                        <p className="text-sm text-gray-600 mt-1">
-                                            {group.description || "설명 없음"}
-                                        </p>
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                                </div>
+                            )}
 
-                    {/* 서비스 목록 */}
-                    {isAdmin ? (
-                        // 관리자용 서비스 목록
-                        <>
-                            {isTableView ? (
-                                <AdminServiceTable 
-                                    services={paginatedServices}
-                                    onDelete={deleteServices}
-                                    servicesStatus={servicesStatus}
-                                    onServiceClick={handleServiceClick}
-                                    onEditService={service => {
-                                        setEditingService(service);
-                                        setShowServiceModal(true);
-                                    }}
-                                    getStatusIndicator={getStatusIndicator}
-                                    onAssignGroup={handleAssignServiceToGroup}
-                                />
+                            {/* 서비스 목록 */}
+                            {isAdmin ? (
+                                // 관리자용 서비스 목록
+                                <>
+                                    {isTableView ? (
+                                        <AdminServiceTable 
+                                            services={paginatedServices}
+                                            onDelete={deleteServices}
+                                            servicesStatus={servicesStatus}
+                                            onServiceClick={handleServiceClick}
+                                            onEditService={service => {
+                                                setEditingService(service);
+                                                setShowServiceModal(true);
+                                            }}
+                                            getStatusIndicator={getStatusIndicator}
+                                            onAssignGroup={handleAssignServiceToGroup}
+                                        />
+                                    ) : (
+                                        <AdminServiceList
+                                            services={paginatedServices}
+                                            onDelete={deleteServices}
+                                            servicesStatus={servicesStatus}
+                                            onServiceClick={handleServiceClick}
+                                            onEditService={service => {
+                                                setEditingService(service);
+                                                setShowServiceModal(true);
+                                            }}
+                                            getStatusIndicator={getStatusIndicator}
+                                            onViewService={service => setViewingService(service)}
+                                            onAssignGroup={handleAssignServiceToGroup}
+                                        />
+                                    )}
+                                </>
                             ) : (
-                                <AdminServiceList
-                                    services={paginatedServices}
-                                    onDelete={deleteServices}
-                                    servicesStatus={servicesStatus}
-                                    onServiceClick={handleServiceClick}
-                                    onEditService={service => {
-                                        setEditingService(service);
-                                        setShowServiceModal(true);
-                                    }}
-                                    getStatusIndicator={getStatusIndicator}
-                                    onViewService={service => setViewingService(service)}
-                                    onAssignGroup={handleAssignServiceToGroup}
-                                />
+                                // 일반 사용자용 서비스 목록
+                                <>
+                                    {isTableView ? (
+                                        <UserServiceTable
+                                            services={paginatedServices}
+                                            servicesStatus={servicesStatus}
+                                            onServiceClick={handleServiceClick}
+                                            getStatusIndicator={getStatusIndicator}
+                                            onViewService={service => setViewingService(service)}
+                                            onToggleFavorite={handleToggleFavorite}
+                                            onAssignGroup={handleAssignServiceToGroup}
+                                            groups={[...userGroups, ...groups]}
+                                        />
+                                    ) : (
+                                        <UserServiceList
+                                            services={paginatedServices}
+                                            servicesStatus={servicesStatus}
+                                            onServiceClick={handleServiceClick}
+                                            getStatusIndicator={getStatusIndicator}
+                                            onViewService={service => setViewingService(service)}
+                                            onToggleFavorite={handleToggleFavorite}
+                                            onAssignGroup={handleAssignServiceToGroup}
+                                            groups={[...userGroups, ...groups]}
+                                        />
+                                    )}
+                                </>
+                            )}
+
+                            {/* 페이지네이션 */}
+                            {filteredServices.length > 0 && (
+                                <div className="mt-6 flex justify-center">
+                                    <nav className="flex items-center">
+                                        <button
+                                            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                                            disabled={currentPage === 1}
+                                            className={`mx-1 px-3 py-1 rounded ${
+                                                currentPage === 1 
+                                                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed' 
+                                                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                            }`}
+                                        >
+                                            이전
+                                        </button>
+                                        
+                                        {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+                                            <button
+                                                key={page}
+                                                onClick={() => setCurrentPage(page)}
+                                                className={`mx-1 px-3 py-1 rounded ${
+                                                    currentPage === page 
+                                                        ? 'bg-blue-500 text-white' 
+                                                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                                }`}
+                                            >
+                                                {page}
+                                            </button>
+                                        ))}
+                                        
+                                        <button
+                                            onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                                            disabled={currentPage === totalPages}
+                                            className={`mx-1 px-3 py-1 rounded ${
+                                                currentPage === totalPages 
+                                                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed' 
+                                                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                            }`}
+                                        >
+                                            다음
+                                        </button>
+                                    </nav>
+                                </div>
+                            )}
+
+                            {filteredServices.length === 0 && (
+                                <div className="text-center py-10">
+                                    <p className="text-gray-500 text-lg">표시할 서비스가 없습니다.</p>
+                                </div>
                             )}
                         </>
-                    ) : (
-                        // 일반 사용자용 서비스 목록
-                        <>
-                            {isTableView ? (
-                                <UserServiceTable
-                                    services={paginatedServices}
-                                    servicesStatus={servicesStatus}
-                                    onServiceClick={handleServiceClick}
-                                    getStatusIndicator={getStatusIndicator}
-                                    onViewService={service => setViewingService(service)}
-                                    onToggleFavorite={handleToggleFavorite}
-                                    onAssignGroup={handleAssignServiceToGroup}
-                                    groups={[...userGroups, ...groups]}
-                                />
-                            ) : (
-                                <UserServiceList
-                                    services={paginatedServices}
-                                    servicesStatus={servicesStatus}
-                                    onServiceClick={handleServiceClick}
-                                    getStatusIndicator={getStatusIndicator}
-                                    onViewService={service => setViewingService(service)}
-                                    onToggleFavorite={handleToggleFavorite}
-                                    onAssignGroup={handleAssignServiceToGroup}
-                                    groups={[...userGroups, ...groups]}
-                                />
-                            )}
-                        </>
                     )}
-
-                    {/* 페이지네이션 */}
-                    {filteredServices.length > 0 && (
-                        <div className="mt-6 flex justify-center">
-                            <nav className="flex items-center">
-                                <button
-                                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                                    disabled={currentPage === 1}
-                                    className={`mx-1 px-3 py-1 rounded ${
-                                        currentPage === 1 
-                                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed' 
-                                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                    }`}
-                                >
-                                    이전
-                                </button>
-                                
-                                {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                                    <button
-                                        key={page}
-                                        onClick={() => setCurrentPage(page)}
-                                        className={`mx-1 px-3 py-1 rounded ${
-                                            currentPage === page 
-                                                ? 'bg-blue-500 text-white' 
-                                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                        }`}
-                                    >
-                                        {page}
-                                    </button>
-                                ))}
-                                
-                                <button
-                                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                                    disabled={currentPage === totalPages}
-                                    className={`mx-1 px-3 py-1 rounded ${
-                                        currentPage === totalPages 
-                                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed' 
-                                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                    }`}
-                                >
-                                    다음
-                                </button>
-                            </nav>
-                        </div>
-                    )}
-
-                    {filteredServices.length === 0 && (
-                        <div className="text-center py-10">
-                            <p className="text-gray-500 text-lg">표시할 서비스가 없습니다.</p>
-                        </div>
+                    
+                    {/* FAQ 탭 컨텐츠 삭제 */}
+                    
+                    {/* 모니터링 탭 컨텐츠 */}
+                    {activeTab === 'monitoring' && (
+                        <Monitoring />
                     )}
 
                     <div>

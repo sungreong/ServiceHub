@@ -155,3 +155,41 @@ class ServiceAccess(Base):
     # 관계 설정
     service = relationship("Service", backref="accesses")
     user = relationship("User", backref="service_accesses")
+
+
+# FAQ 게시물 유형 enum
+class PostType(str, enum.Enum):
+    FAQ = "faq"
+    NOTICE = "notice"
+    INQUIRY = "inquiry"
+
+
+# FAQ 처리 상태 enum
+class FaqStatus(str, enum.Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+# FAQ 모델
+class FAQ(Base):
+    __tablename__ = "faqs"
+
+    id = Column(String, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_published = Column(Boolean, default=True)
+    service_id = Column(String(8), ForeignKey("services.id"), nullable=True)
+    author = Column(String, nullable=True)
+    author_id = Column(String, ForeignKey("users.email"), nullable=True)
+    post_type = Column(Enum(PostType), default=PostType.FAQ)
+    status = Column(Enum(FaqStatus), default=FaqStatus.NOT_APPLICABLE)
+    response = Column(Text, nullable=True)
+
+    # 관계 설정
+    service = relationship("Service", backref="faqs")
+    user = relationship("User", backref="faqs", foreign_keys=[author_id])

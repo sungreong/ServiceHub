@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
 from .models import RequestStatus
+from pydantic import validator
 
 
 # ServiceGroup 스키마 추가
@@ -72,13 +73,40 @@ class Service(BaseModel):
     show_info: bool = False
     is_ip: bool = True
     created_at: Optional[datetime] = None
-    url: str
+    url: Optional[str] = None
     group_id: Optional[str] = None
     group: Optional[ServiceGroup] = None
 
     class Config:
         orm_mode = True
         json_encoders = {datetime: lambda v: v.isoformat() if v else None}
+
+    @validator("url", pre=True, always=True)
+    def set_url(cls, v, values):
+        """url 필드가 없는 경우 기본값 생성"""
+        if v is not None:
+            return v
+
+        # 필요한 필드가 모두 있는 경우에만 URL 생성 시도
+        if all(k in values for k in ("protocol", "host")):
+            protocol = values.get("protocol", "http")
+            host = values.get("host", "")
+            port = values.get("port")
+            base_path = values.get("base_path", "")
+
+            if not host:
+                return None
+
+            result = f"{protocol}://{host}"
+            if port is not None:
+                result += f":{port}"
+            if base_path:
+                if not base_path.startswith("/"):
+                    result += "/"
+                result += base_path
+
+            return result
+        return None
 
 
 class ServiceWithAccess(Service):
@@ -212,6 +240,87 @@ class AccessStats(BaseModel):
 
     class Config:
         orm_mode = True
+
+
 # 대기 중인 요청 수 응답 모델
 class PendingRequestsCount(BaseModel):
     count: int
+
+
+# FAQ 관련 스키마
+class FaqBase(BaseModel):
+    title: str
+    content: str
+    category: str
+    is_published: bool = True
+    service_id: Optional[str] = None
+    post_type: str = "faq"
+    status: Optional[str] = "not_applicable"
+    response: Optional[str] = None
+
+    # 서비스 ID 처리 개선
+    @validator("service_id", pre=True, always=True)
+    def process_service_id(cls, v):
+        # v가 None인 경우 명시적으로 None을 반환
+        if v is None:
+            print("[VALIDATOR:Base] 명시적인 None 값 service_id 처리")
+            return None
+
+        # 빈 문자열이나 공백만 있는 경우 None으로 처리
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            print("[VALIDATOR:Base] 빈 문자열/공백 service_id를 None으로 처리")
+            return None
+
+        # 그 외 유효한 값은 그대로 반환
+        print(f"[VALIDATOR:Base] 유효한 service_id 처리: {v}")
+        return v
+
+
+class FaqCreate(FaqBase):
+    pass
+
+
+class FaqUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    is_published: Optional[bool] = None
+    service_id: Optional[str] = None
+    post_type: Optional[str] = None
+    status: Optional[str] = None
+    response: Optional[str] = None
+
+    # 서비스 ID 처리 개선
+    @validator("service_id", pre=True, always=True)
+    def process_service_id(cls, v):
+        # v가 None인 경우 명시적으로 None을 반환 (이 필드가 요청에 포함되었음을 의미)
+        if v is None:
+            print("[VALIDATOR] 명시적인 None 값 service_id 처리")
+            return None
+
+        # 빈 문자열이나 공백만 있는 경우 None으로 처리
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            print("[VALIDATOR] 빈 문자열/공백 service_id를 None으로 처리")
+            return None
+
+        # 그 외 유효한 값은 그대로 반환
+        print(f"[VALIDATOR] 유효한 service_id 처리: {v}")
+        return v
+
+
+class Faq(FaqBase):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    author: Optional[str] = None
+    author_id: Optional[str] = None
+    service: Optional[Service] = None
+
+    class Config:
+        orm_mode = True
+
+    @validator("service", pre=True)
+    def validate_service(cls, v):
+        if v is None:
+            return None
+        return v
