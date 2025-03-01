@@ -1,5 +1,12 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import axios from '../api/axios';
+
+interface ServiceGroup {
+    id: string;
+    name: string;
+    description?: string;
+    created_at?: string;
+}
 
 interface Service {
     name: string;
@@ -7,12 +14,14 @@ interface Service {
     url: string;
     description?: string;
     show_info?: boolean;
+    group_id?: string | null;
 }
 
 interface SingleService {
     url: string;
     name: string;
     description: string;
+    group_id: string | null;
 }
 
 interface Message {
@@ -21,11 +30,46 @@ interface Message {
 }
 
 const BulkServiceAdd: React.FC = () => {
-    const [singleService, setSingleService] = useState<SingleService>({ url: '', name: '', description: '' });
+    const [singleService, setSingleService] = useState<SingleService>({ 
+        url: '', 
+        name: '', 
+        description: '',
+        group_id: null
+    });
     const [jsonFile, setJsonFile] = useState<File | null>(null);
     const [error, setError] = useState<string>('');
     const [message, setMessage] = useState<Message | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [groups, setGroups] = useState<ServiceGroup[]>([]);
+
+    // 그룹 목록 가져오기
+    useEffect(() => {
+        fetchGroups();
+    }, []);
+
+    const fetchGroups = async () => {
+        try {
+            const token = localStorage.getItem('token');
+            if (!token) return;
+
+            // 백엔드 API가 구현되어 있다고 가정
+            const response = await axios.get('/service-groups', {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            
+            if (response.data) {
+                setGroups(response.data);
+            }
+        } catch (err) {
+            console.error('Failed to fetch service groups:', err);
+            // 임시 그룹 데이터 (백엔드 API가 없는 경우)
+            setGroups([
+                { id: 'group_1', name: '개발 서비스', description: '개발 관련 서비스 모음', created_at: new Date().toISOString() },
+                { id: 'group_2', name: '운영 서비스', description: '운영 관련 서비스 모음', created_at: new Date().toISOString() },
+                { id: 'group_3', name: '테스트 서비스', description: '테스트용 서비스 모음', created_at: new Date().toISOString() }
+            ]);
+        }
+    };
 
     const extractProtocolAndUrl = (fullUrl: string): { protocol: 'http' | 'https'; url: string } | null => {
         try {
@@ -65,7 +109,8 @@ const BulkServiceAdd: React.FC = () => {
                 protocol: urlInfo.protocol,
                 url: urlInfo.url,
                 description: singleService.description.trim() || undefined,
-                show_info: false
+                show_info: false,
+                group_id: singleService.group_id
             };
 
             const response = await axios.post('/services', serviceData);
@@ -74,7 +119,7 @@ const BulkServiceAdd: React.FC = () => {
                 type: 'success',
                 text: '서비스가 성공적으로 추가되었습니다.'
             });
-            setSingleService({ url: '', name: '', description: '' });
+            setSingleService({ url: '', name: '', description: '', group_id: null });
         } catch (err: any) {
             const errorDetail = err.response?.data?.detail;
             if (typeof errorDetail === 'object') {
@@ -205,6 +250,21 @@ const BulkServiceAdd: React.FC = () => {
                                 rows={3}
                             />
                         </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                그룹
+                            </label>
+                            <select
+                                value={singleService.group_id || ''}
+                                onChange={(e) => setSingleService({...singleService, group_id: e.target.value || null})}
+                                className="w-full px-3 py-2 border rounded-md"
+                            >
+                                <option value="">그룹 없음</option>
+                                {groups.map(group => (
+                                    <option key={group.id} value={group.id}>{group.name}</option>
+                                ))}
+                            </select>
+                        </div>
                         <button
                             type="submit"
                             className="w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
@@ -238,7 +298,8 @@ const BulkServiceAdd: React.FC = () => {
                                         "name": "서비스명",
                                         "protocol": "https",
                                         "url": "git.sparklingsoda.ai:8443/users/sign_in",
-                                        "description": "서비스 설명"
+                                        "description": "서비스 설명",
+                                        "group_id": "group_1"
                                     }
                                 ], null, 2)}
                             </pre>

@@ -191,7 +191,6 @@ location ~ ^/api/{{ service.id }}/.*$ {
 }
 """
 
-# # HTTPS 서비스용 템플릿
 # HTTPS 서비스용 템플릿
 HTTPS_TEMPLATE = """
 # HTTPS 서비스 [ID: {{ service.id }}] 설정
@@ -351,19 +350,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 
-def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """리프레시 토큰 생성 함수"""
-    to_encode = data.copy()
-    # 리프레시 토큰은 기본적으로 30일 유효, 또는 지정된 만료 시간 사용
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(days=30)
-    to_encode.update({"exp": expire, "token_type": "refresh"})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -450,33 +436,11 @@ async def get_current_user(db: Session = Depends(database.get_db), token: str = 
             raise credentials_exception
     except JWTError:
         raise credentials_exception
+
     user = db.query(models.User).filter(models.User.email == email).first()
     if user is None:
         raise credentials_exception
     return user
-
-
-async def get_current_user_optional(db: Session = Depends(database.get_db), token: str = Header(None)):
-    """토큰이 제공되지 않거나 유효하지 않은 경우에도 예외를 발생시키지 않고 None을 반환합니다."""
-    if not token:
-        return None
-
-    try:
-        # Bearer 토큰 형식인 경우 처리
-        if token.startswith("Bearer "):
-            token = token.replace("Bearer ", "")
-
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            return None
-
-        user = db.query(models.User).filter(models.User.email == email).first()
-        return user
-    except JWTError:
-        return None
-    except Exception:
-        return None
 
 
 def validate_port(port: int) -> bool:
@@ -713,36 +677,6 @@ async def auth_check(
         print(f"[DEBUG] 정적 리소스 또는 로그인 페이지 접근 - 인증 건너뜀: {request_uri}")
         return {"status": "ok", "email": "guest@example.com", "resource_type": "static"}
 
-    # 관리자 여부 체크를 위한 변수
-    is_admin_request = False
-    user_email = None
-
-    # 쿠키에서 사용자 정보 확인 - 관리자인 경우 토큰 확인 없이 통과
-    if cookie_auth:
-        try:
-            cookie_dict = {}
-            for item in cookie_auth.split("; "):
-                if "=" in item:
-                    key, value = item.split("=", 1)
-                    cookie_dict[key] = value
-
-            # user_email 쿠키 확인
-            if "user_email" in cookie_dict:
-                user_email = cookie_dict["user_email"]
-                print(f"[DEBUG] 쿠키에서 이메일 발견: {user_email}")
-
-                # DB에서 사용자 확인
-                if user_email:
-                    admin_user = db.query(models.User).filter(models.User.email == user_email).first()
-                    if admin_user and admin_user.is_admin:
-                        is_admin_request = True
-                        print(f"[DEBUG] 관리자 계정 발견: {user_email}")
-                        # 관리자 계정인 경우 즉시 인증 통과
-                        print(f"[DEBUG] 관리자 계정으로 인증 즉시 허용: {user_email}")
-                        return {"status": "ok", "email": user_email, "user_id": str(admin_user.id), "is_admin": True}
-        except Exception as e:
-            print(f"[ERROR] 쿠키 파싱 실패: {str(e)}")
-
     # JWT 인증 로직 시작
     try:
         print("[DEBUG] Authorization header:", token)  # 헤더 로깅
@@ -890,19 +824,14 @@ async def auth_check(
                 print(f"[ERROR] 사용자를 찾을 수 없음: {email}")
                 return Response(status_code=401, content="등록되지 않은 사용자입니다.")
 
-            # 관리자인 경우 추가 확인 - 관리자는 토큰 검증 없이 즉시 통과
-            if user.is_admin:
-                print(f"[DEBUG] 관리자 계정으로 확인됨: {email}")
-                return {"status": "ok", "email": email, "user_id": str(user.id), "is_admin": True}
-
-            # 승인 대기 중인 사용자 체크 (관리자는 예외)
+            # 승인 대기 중인 사용자 체크
             if user.status == models.UserStatus.PENDING and not user.is_admin:
                 print(f"[ERROR] 승인 대기 중인 사용자: {email}")
                 return Response(status_code=403, content="계정이 아직 승인되지 않았습니다.")
 
             print(f"[DEBUG] 인증 성공: {email}, 사용자 ID: {user.id}, 관리자 권한: {user.is_admin}")
 
-            # 서비스 접근 권한 확인 (request_uri에서 서비스 ID 추출) - 관리자는 모든 서비스 접근 가능
+            # 서비스 접근 권한 확인 (request_uri에서 서비스 ID 추출)
             service_id = None
             if request_uri.startswith("/api/"):
                 parts = request_uri.split("/")
@@ -911,17 +840,18 @@ async def auth_check(
                         service_id = int(parts[2])
                         print(f"[DEBUG] 요청 서비스 ID: {service_id}")
 
-                        # 관리자는 모든 서비스에 접근 가능
-                        if user.is_admin:
-                            print(f"[DEBUG] 관리자 권한으로 서비스 접근 허용: {service_id}")
-                        else:
-                            # 서비스 접근 권한 확인
-                            service = db.query(models.Service).filter(models.Service.id == service_id).first()
-                            if service and not service.is_public:
-                                # 비공개 서비스인 경우 접근 권한 확인
-                                access_allowed = False
+                        # 서비스 접근 권한 확인
+                        service = db.query(models.Service).filter(models.Service.id == service_id).first()
+                        if service and not service.is_public:
+                            # 비공개 서비스인 경우 접근 권한 확인
+                            access_allowed = False
 
-                                # 특정 사용자에게 권한이 부여된 경우 확인
+                            # 1. 관리자는 모든 서비스에 접근 가능
+                            if user.is_admin:
+                                access_allowed = True
+                                print(f"[DEBUG] 관리자 권한으로 서비스 접근 허용: {service_id}")
+                            else:
+                                # 2. 특정 사용자에게 권한이 부여된 경우 확인
                                 service_access = (
                                     db.query(models.ServiceAccess)
                                     .filter(
@@ -946,34 +876,6 @@ async def auth_check(
 
         except JWTError as e:
             print(f"[ERROR] JWT 오류: {str(e)}")
-
-            # 토큰에서 이메일 추출 시도 (만료된 경우에도)
-            try:
-                # 만료 검증을 건너뛰고 페이로드 추출
-                payload = jwt.decode(auth_token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
-                email = payload.get("sub")
-
-                if email:
-                    # 이메일로 사용자 조회
-                    user = db.query(models.User).filter(models.User.email == email).first()
-
-                    # 관리자인 경우 토큰 만료 무시하고 통과
-                    if user and user.is_admin:
-                        print(f"[DEBUG] 토큰 만료됨 but 관리자 계정으로 인증 허용: {email}")
-                        return {"status": "ok", "email": email, "user_id": str(user.id), "is_admin": True}
-            except Exception as jwt_ex:
-                print(f"[ERROR] 만료된 토큰에서 정보 추출 실패: {str(jwt_ex)}")
-
-            # 쿠키에서 확인된 관리자 계정으로 처리
-            if is_admin_request and user_email:
-                # 관리자 조회
-                admin_user = (
-                    db.query(models.User).filter(models.User.email == user_email, models.User.is_admin == True).first()
-                )
-                if admin_user:
-                    print(f"[DEBUG] 토큰 만료됨 but 관리자 계정으로 인증 허용: {user_email}")
-                    return {"status": "ok", "email": user_email, "user_id": str(admin_user.id), "is_admin": True}
-
             return Response(status_code=401, content=f"유효하지 않은 인증 토큰입니다: {str(e)}")
 
     except HTTPException as he:
@@ -1058,36 +960,24 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
             print(f"[ERROR] 비밀번호 불일치: {email}")
             raise HTTPException(status_code=401, detail={"message": "잘못된 비밀번호입니다."})
 
-        # 관리자 권한 확인 (DB에서만 확인)
-        is_admin = user.is_admin
-
-        # 관리자면 더 긴 토큰 유효 기간 설정 (24시간), 아니면 15분
-        token_expiry = timedelta(hours=24) if is_admin else timedelta(minutes=15)
-
-        # 토큰 생성 시 만료 시간을 설정
-        access_token = create_access_token(data={"sub": user.email, "user_id": user.id}, expires_delta=token_expiry)
-
-        # 리프레시 토큰 생성 (관리자는 60일, 일반 사용자는 30일)
-        refresh_token_expiry = timedelta(days=60) if is_admin else timedelta(days=30)
-        refresh_token = create_refresh_token(
-            data={"sub": user.email, "user_id": user.id}, expires_delta=refresh_token_expiry
+        # 토큰 생성 시 만료 시간을 24시간으로 설정
+        access_token = create_access_token(
+            data={"sub": user.email, "user_id": user.id}, expires_delta=timedelta(hours=24)  # 사용자 ID 추가
         )
 
         # 응답에 토큰 정보와 사용자 정보를 추가
         response_data = {
             "access_token": access_token,
-            "refresh_token": refresh_token,  # 리프레시 토큰 추가
             "token_type": "bearer",
             "is_admin": user.is_admin,
-            "user_id": user.id,
-            "email": user.email,
-            "expires_in": int(token_expiry.total_seconds()),  # 토큰 만료 시간을 초 단위로
+            "user_id": user.id,  # 사용자 ID 추가
+            "email": user.email,  # 이메일 추가
+            "expires_in": 24 * 60 * 60,  # 24시간을 초 단위로
         }
 
         # 디버그 로그 - 토큰 생성 확인
         print(f"[DEBUG] 토큰 생성 완료: {email}")
         print(f"[DEBUG] 토큰 길이: {len(access_token)}")
-        print(f"[DEBUG] 토큰 만료 시간: {token_expiry}")
 
         # FastAPI Response 객체 생성
         response = Response(content=json.dumps(response_data), media_type="application/json")
@@ -1097,7 +987,7 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
             key="token",
             value=access_token,
             httponly=False,  # JavaScript에서 접근할 수 있도록 설정
-            max_age=int(token_expiry.total_seconds()),  # 토큰 만료 시간과 동일하게 설정
+            max_age=24 * 60 * 60,  # 24시간
             path="/",
             samesite="lax",  # 크로스 사이트 요청에 대한 보안 설정
         )
@@ -1107,7 +997,7 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
             key="user_id",
             value=str(user.id),
             httponly=False,
-            max_age=int(token_expiry.total_seconds()),
+            max_age=24 * 60 * 60,
             path="/",
             samesite="lax",
         )
@@ -1117,7 +1007,7 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
             key="user_email",
             value=user.email,
             httponly=False,
-            max_age=int(token_expiry.total_seconds()),
+            max_age=24 * 60 * 60,
             path="/",
             samesite="lax",
         )
@@ -1127,19 +1017,14 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
             key="is_admin",
             value=str(user.is_admin).lower(),
             httponly=False,
-            max_age=int(token_expiry.total_seconds()),
+            max_age=24 * 60 * 60,
             path="/",
             samesite="lax",
         )
 
         # 백업 쿠키 추가 (다양한 라이브러리/프레임워크와의 호환성을 위해)
         response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=False,
-            max_age=int(token_expiry.total_seconds()),
-            path="/",
-            samesite="lax",
+            key="access_token", value=access_token, httponly=False, max_age=24 * 60 * 60, path="/", samesite="lax"
         )
 
         print(f"[DEBUG] 로그인 성공 - 토큰 및 사용자 정보 쿠키 설정: {email}")
@@ -1155,91 +1040,6 @@ async def login(email: str = Body(...), password: str = Body(...), db: Session =
 
         print(f"[ERROR] 스택 트레이스: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail={"message": f"로그인 처리 중 오류가 발생했습니다: {str(e)}"})
-
-
-@auth_router.post("/refresh-token")
-async def refresh_token(
-    refresh_token: str = Body(None), request: Request = None, db: Session = Depends(database.get_db)
-):
-    """리프레시 토큰을 사용하여 새로운 액세스 토큰을 발급합니다."""
-    try:
-        # 요청 본문 읽기
-        token_value = refresh_token
-
-        # 토큰이 없는 경우 요청 본문에서 직접 읽기 시도
-        if not token_value and request:
-            try:
-                body = await request.body()
-                body_str = body.decode("utf-8")
-
-                print(f"[DEBUG] 요청 본문: {body_str}")
-
-                # JSON 형식인지 확인
-                if body_str.strip().startswith("{"):
-                    try:
-                        body_json = json.loads(body_str)
-                        if "refresh_token" in body_json:
-                            token_value = body_json["refresh_token"]
-                            print(f"[DEBUG] JSON에서 리프레시 토큰 추출: {token_value[:10]}...")
-                    except json.JSONDecodeError:
-                        pass
-
-                # 일반 텍스트인 경우
-                if not token_value and body_str and not body_str.strip().startswith("{"):
-                    token_value = body_str.strip()
-                    print(f"[DEBUG] 텍스트 본문에서 리프레시 토큰 추출: {token_value[:10]}...")
-            except Exception as e:
-                print(f"[ERROR] 요청 본문 파싱 실패: {str(e)}")
-
-        if not token_value:
-            print("[ERROR] 리프레시 토큰을 찾을 수 없음")
-            raise HTTPException(status_code=400, detail="리프레시 토큰이 제공되지 않았습니다.")
-
-        print(f"[DEBUG] 리프레시 토큰 요청 처리 중: {token_value[:10]}...")
-
-        # 리프레시 토큰 검증
-        try:
-            payload = jwt.decode(token_value, SECRET_KEY, algorithms=[ALGORITHM])
-            print(f"[DEBUG] 리프레시 토큰 검증 성공, 페이로드: {payload}")
-
-            # 토큰 타입 확인
-            if payload.get("token_type") != "refresh":
-                print(f"[ERROR] 유효하지 않은 토큰 타입: {payload.get('token_type')}")
-                raise HTTPException(status_code=401, detail="유효하지 않은 리프레시 토큰입니다.")
-
-            email = payload.get("sub")
-            user_id = payload.get("user_id")
-
-            if email is None or user_id is None:
-                print(f"[ERROR] 토큰에 필수 정보 누락: email={email}, user_id={user_id}")
-                raise HTTPException(status_code=401, detail="유효하지 않은 리프레시 토큰입니다.")
-
-            # 사용자 존재 여부 확인
-            user = db.query(models.User).filter(models.User.email == email).first()
-            if not user or user.id != user_id:
-                print(f"[ERROR] 사용자를 찾을 수 없음: email={email}, user_id={user_id}")
-                raise HTTPException(status_code=401, detail="사용자를 찾을 수 없습니다.")
-
-            print(f"[DEBUG] 사용자 확인 완료: {user.email}, ID: {user.id}")
-
-            # 새로운 액세스 토큰 발급
-            access_token = create_access_token(
-                data={"sub": email, "user_id": user_id}, expires_delta=timedelta(minutes=15)
-            )
-
-            print(f"[DEBUG] 새 액세스 토큰 발급 완료: {access_token[:10]}...")
-
-            return {
-                "access_token": access_token,
-                "token_type": "bearer",
-                "expires_in": 15 * 60,  # 15분을 초 단위로
-            }
-        except JWTError as e:
-            print(f"[ERROR] 리프레시 토큰 검증 실패: {str(e)}")
-            raise HTTPException(status_code=401, detail="리프레시 토큰이 만료되었거나 유효하지 않습니다.")
-    except Exception as e:
-        print(f"[ERROR] 토큰 갱신 중 오류 발생: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"토큰 갱신 중 오류가 발생했습니다: {str(e)}")
 
 
 # 서비스 설정을 생성할 때 사용 예시
@@ -1305,46 +1105,3 @@ def reload_nginx():
     except Exception as e:
         print(f"Nginx 재시작 실패: {str(e)}")
         return False
-
-
-# Nginx 설정에서 서비스 제거 함수
-def remove_service_from_nginx(service_id: str):
-    """
-    Nginx 설정에서 특정 서비스 관련 설정을 제거합니다.
-
-    Args:
-        service_id: 삭제할 서비스의 ID
-
-    Returns:
-        bool: 성공 여부
-    """
-    try:
-        # 환경 변수 또는 상수에서 Nginx 설정 파일 경로 가져오기
-        nginx_conf_dir = os.environ.get("NGINX_CONF_DIR", "/etc/nginx/conf.d")
-
-        # 서비스별 설정 파일 경로
-        service_conf_path = os.path.join(nginx_conf_dir, f"service_{service_id}.conf")
-
-        # 해당 설정 파일이 존재하는 경우 삭제
-        if os.path.exists(service_conf_path):
-            os.remove(service_conf_path)
-            print(f"[INFO] 서비스 {service_id}의 Nginx 설정 파일을 삭제했습니다.")
-
-        # Nginx 재시작 (Docker 환경에서는 다른 방식으로 처리해야 할 수 있음)
-        try:
-            # 컨테이너 환경에서는 Nginx 설정 리로드만 수행
-            subprocess.run(["nginx", "-s", "reload"], check=True)
-            print("[INFO] Nginx 설정을 리로드했습니다.")
-        except subprocess.CalledProcessError:
-            # 표준 환경에서 실행 중인 경우 서비스 재시작
-            subprocess.run(["systemctl", "reload", "nginx"], check=True)
-            print("[INFO] Nginx 서비스를 리로드했습니다.")
-        except Exception as e:
-            print(f"[WARNING] Nginx 재시작 실패: {str(e)}")
-            # 실패해도 계속 진행
-
-        return True
-    except Exception as e:
-        print(f"[ERROR] Nginx 설정 제거 중 오류 발생: {str(e)}")
-        # 예외를 호출자에게 전파하여 적절히 처리할 수 있도록 함
-        raise

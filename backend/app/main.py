@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Header, File, UploadFile, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from . import models, schemas, database, auth
+from . import models, schemas, database, auth, services, monitoring
 from typing import List, Optional
 from .database import engine, SessionLocal, get_db
 from jose import jwt, JWTError
@@ -19,6 +19,9 @@ from .services import services_router
 from .auth import auth_router  # auth_router import 추가
 from fastapi.security import OAuth2PasswordRequestForm
 from .config import ACCESS_TOKEN_EXPIRE_MINUTES
+import uuid
+from .monitoring import monitoring_router
+import uvicorn
 
 # 환경변수에서 도메인 가져오기 (기본값 gmail.com)
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "gmail.com")
@@ -28,6 +31,7 @@ app = FastAPI()
 # auth 라우터 포함
 app.include_router(auth_router)
 app.include_router(services_router)
+app.include_router(monitoring_router)  # 모니터링 라우터 추가
 
 # CORS 미들웨어 설정
 app.add_middleware(
@@ -38,6 +42,121 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+# 서비스 그룹 관련 모델
+class ServiceGroupBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class ServiceGroupCreate(ServiceGroupBase):
+    pass
+
+
+class ServiceGroup(ServiceGroupBase):
+    id: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+# 서비스 그룹 API 엔드포인트
+@app.get("/service-groups", response_model=List[ServiceGroup])
+async def get_service_groups(
+    current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """서비스 그룹 목록을 조회합니다."""
+    groups = db.query(models.ServiceGroup).all()
+    return groups
+
+
+@app.post("/service-groups", response_model=ServiceGroup)
+async def create_service_group(
+    group: ServiceGroupCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """새로운 서비스 그룹을 생성합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 그룹을 생성할 수 있습니다.")
+
+    # 중복 이름 확인
+    existing_group = db.query(models.ServiceGroup).filter(models.ServiceGroup.name == group.name).first()
+    if existing_group:
+        raise HTTPException(status_code=400, detail="이미 존재하는 그룹 이름입니다.")
+
+    # 새 그룹 생성
+    new_group = models.ServiceGroup(
+        id=str(uuid.uuid4())[:8], name=group.name, description=group.description, created_at=datetime.utcnow()
+    )
+
+    db.add(new_group)
+    db.commit()
+    db.refresh(new_group)
+    return new_group
+
+
+@app.put("/service-groups/{group_id}", response_model=ServiceGroup)
+async def update_service_group(
+    group_id: str,
+    group: ServiceGroupCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """서비스 그룹 정보를 수정합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 그룹을 수정할 수 있습니다.")
+
+    # 그룹 존재 여부 확인
+    db_group = db.query(models.ServiceGroup).filter(models.ServiceGroup.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="그룹을 찾을 수 없습니다.")
+
+    # 다른 그룹과 이름 중복 확인
+    existing_group = (
+        db.query(models.ServiceGroup)
+        .filter(models.ServiceGroup.name == group.name, models.ServiceGroup.id != group_id)
+        .first()
+    )
+    if existing_group:
+        raise HTTPException(status_code=400, detail="이미 존재하는 그룹 이름입니다.")
+
+    # 그룹 정보 업데이트
+    db_group.name = group.name
+    db_group.description = group.description
+
+    db.commit()
+    db.refresh(db_group)
+    return db_group
+
+
+@app.delete("/service-groups/{group_id}")
+async def delete_service_group(
+    group_id: str, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)
+):
+    """서비스 그룹을 삭제합니다."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 그룹을 삭제할 수 있습니다.")
+
+    # 그룹 존재 여부 확인
+    db_group = db.query(models.ServiceGroup).filter(models.ServiceGroup.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="그룹을 찾을 수 없습니다.")
+
+    # 그룹에 속한 서비스 확인
+    services_in_group = db.query(models.Service).filter(models.Service.group_id == group_id).all()
+    if services_in_group:
+        # 그룹에 속한 서비스들의 그룹 ID를 null로 설정
+        for service in services_in_group:
+            service.group_id = None
+
+    # 그룹 삭제
+    db.delete(db_group)
+    db.commit()
+
+    return {"status": "success", "message": "그룹이 삭제되었습니다."}
 
 
 # 데이터베이스 의존성
@@ -410,11 +529,7 @@ async def get_available_services(
     """현재 사용자가 요청할 수 있는 서비스 목록을 반환합니다."""
     # 관리자는 모든 서비스에 접근 가능
     if current_user.is_admin:
-        services = db.query(models.Service).all()
-        # URL 속성 추가
-        for service in services:
-            service.url = service.full_url
-        return services
+        return db.query(models.Service).all()
 
     # 1. 이미 요청했거나 승인된 서비스 ID 목록
     existing_requests = (
@@ -436,10 +551,6 @@ async def get_available_services(
         )
         .all()
     )
-
-    # URL 속성 추가
-    for service in available_services:
-        service.url = service.full_url
 
     return available_services
 

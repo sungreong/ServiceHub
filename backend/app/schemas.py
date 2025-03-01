@@ -4,11 +4,30 @@ from datetime import datetime
 from .models import RequestStatus
 
 
+# ServiceGroup 스키마 추가
+class ServiceGroupBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class ServiceGroupCreate(ServiceGroupBase):
+    pass
+
+
+class ServiceGroup(ServiceGroupBase):
+    id: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
 class ServiceBase(BaseModel):
     name: str
     protocol: str = "http"
     url: str  # IP:PORT 또는 도메인 주소
     description: Optional[str] = None
+    group_id: Optional[str] = None  # 그룹 ID 필드 추가
 
 
 class ServiceCreate(BaseModel):
@@ -17,6 +36,7 @@ class ServiceCreate(BaseModel):
     protocol: Optional[str] = None  # URL에서 파싱된 프로토콜을 사용
     description: Optional[str] = None
     show_info: bool = False
+    group_id: Optional[str] = None  # 그룹 ID 필드 추가
 
     class Config:
         schema_extra = {
@@ -24,6 +44,7 @@ class ServiceCreate(BaseModel):
                 "name": "Test Service",
                 "url": "https://git.sparklingsoda.ai:8443",
                 "description": "테스트 서비스입니다.",
+                "group_id": "group_1",  # 예시에 그룹 ID 추가
             }
         }
 
@@ -52,6 +73,8 @@ class Service(BaseModel):
     is_ip: bool = True
     created_at: Optional[datetime] = None
     url: str
+    group_id: Optional[str] = None
+    group: Optional[ServiceGroup] = None
 
     class Config:
         orm_mode = True
@@ -144,3 +167,51 @@ class ServiceCreateResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+# 서비스 접속 정보를 위한 스키마
+class ServiceAccessBase(BaseModel):
+    service_id: Optional[str] = None
+    user_id: Optional[int] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class ServiceAccessCreate(ServiceAccessBase):
+    pass
+
+
+class ServiceAccess(ServiceAccessBase):
+    id: int
+    access_time: datetime
+    is_active: bool
+    last_activity: datetime
+    exit_time: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True
+
+
+# 서비스 접속 통계를 위한 스키마
+class ServiceAccessStats(BaseModel):
+    service_id: str
+    service_name: str
+    active_users: int
+    total_accesses: int
+
+    class Config:
+        orm_mode = True
+
+
+# 전체 접속 통계를 위한 스키마
+class AccessStats(BaseModel):
+    total_active_users: int
+    total_accesses_today: int
+    services_stats: List[ServiceAccessStats] = []
+
+    class Config:
+        orm_mode = True
+# 대기 중인 요청 수 응답 모델
+class PendingRequestsCount(BaseModel):
+    count: int

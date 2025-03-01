@@ -67,7 +67,9 @@ const ServiceRequests: React.FC = () => {
 
     const checkAdminStatus = async () => {
         try {
+            console.log('checkAdminStatus 호출됨');
             const response = await axios.get('/verify-token');
+            console.log('checkAdminStatus 응답:', response.data);
             setIsAdmin(response.data.is_admin);
             if (response.data.is_admin) {
                 fetchAllRequests();

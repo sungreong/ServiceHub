@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import axios from '../api/axios';  // 상대 경로 수정
+import instance from '../api/axios';  // axios 인스턴스 이름 변경
 
 type ErrorType = {
     type?: string;
@@ -40,7 +40,7 @@ const Login: React.FC = () => {
             }
             
             // API 요청 직전에 URL 확인
-            console.log('[DEBUG] 요청 전 백엔드 URL 확인:', axios.defaults.baseURL);
+            console.log('[DEBUG] 요청 전 백엔드 URL 확인:', instance.defaults.baseURL);
             
             console.log('[DEBUG] 로그인 요청 데이터:', { 
                 email, 
@@ -48,10 +48,11 @@ const Login: React.FC = () => {
             });
             
             // 명시적으로 전체 URL 설정
-            const loginEndpoint = `${axios.defaults.baseURL}/login`;
+            const loginEndpoint = `${instance.defaults.baseURL}/login`;
             console.log('[DEBUG] 로그인 엔드포인트:', loginEndpoint);
             
-            const response = await axios.post("/login", { email, password });
+            // instance 사용으로 변경
+            const response = await instance.post("/login", { email, password });
             
             console.log('[DEBUG] 로그인 성공 응답:', response.status, response.data);
             
@@ -59,6 +60,12 @@ const Login: React.FC = () => {
             if (response.data.access_token) {
                 localStorage.setItem("token", response.data.access_token);
                 console.log('[DEBUG] 토큰이 로컬스토리지에 저장됨');
+                
+                // 리프레시 토큰 저장
+                if (response.data.refresh_token) {
+                    localStorage.setItem("refreshToken", response.data.refresh_token);
+                    console.log('[DEBUG] 리프레시 토큰이 로컬스토리지에 저장됨');
+                }
                 
                 // 사용자 정보 로컬스토리지에 저장
                 if (response.data.user_id) {
@@ -71,18 +78,18 @@ const Login: React.FC = () => {
                     localStorage.setItem("user_email", response.data.email);
                 }
                 
-                // 쿠키 확인
-                const tokenCookie = getCookie('token');
-                const userIdCookie = getCookie('user_id');
-                const isAdminCookie = getCookie('is_admin');
+                // 토큰 저장 후 토큰 확인 로그 추가
+                const savedToken = localStorage.getItem('token');
+                console.log('[DEBUG] 저장된 토큰 확인:', savedToken ? `${savedToken.substring(0, 10)}...` : '없음');
                 
-                console.log('[DEBUG] 쿠키 상태:', {
-                    token: tokenCookie ? '존재함' : '없음',
-                    user_id: userIdCookie,
-                    is_admin: isAdminCookie
-                });
+                // 리디렉션 경로 확인
+                const redirectPath = localStorage.getItem('redirectAfterLogin') || "/dashboard";
                 
-                navigate("/dashboard");
+                // 리디렉션 정보 삭제 (일회용)
+                localStorage.removeItem('redirectAfterLogin');
+                
+                console.log('[DEBUG] 리디렉션 경로:', redirectPath);
+                navigate(redirectPath);
             } else {
                 console.error('[ERROR] 응답에 토큰이 없습니다:', response.data);
                 setError({ message: "로그인 성공했으나 인증 토큰이 없습니다." });
@@ -93,8 +100,8 @@ const Login: React.FC = () => {
             // 네트워크 오류 상세 정보
             if (error.message === 'Network Error') {
                 console.error('[ERROR] 네트워크 오류 발생 - 서버에 연결할 수 없습니다');
-                console.error('[ERROR] API 기본 URL:', axios.defaults.baseURL);
-                console.error('[ERROR] withCredentials 설정:', axios.defaults.withCredentials);
+                console.error('[ERROR] API 기본 URL:', instance.defaults.baseURL);
+                console.error('[ERROR] withCredentials 설정:', instance.defaults.withCredentials);
             }
             
             if (error.response) {

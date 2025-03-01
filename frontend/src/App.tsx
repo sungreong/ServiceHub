@@ -11,6 +11,7 @@ import ServiceUsers from './components/ServiceUsers';
 import BulkServiceAdd from './components/BulkServiceAdd';
 import BulkUserAdd from './components/BulkUserAdd';
 import ServiceUserManagement from './components/ServiceUserManagement';
+import Monitoring from './components/Monitoring';
 import './App.css';
 
 interface PrivateRouteProps {
@@ -37,6 +38,14 @@ const App = () => {
                     element={
                         <PrivateRoute>
                             <Dashboard />
+                        </PrivateRoute>
+                    }
+                />
+                <Route
+                    path="/monitoring"
+                    element={
+                        <PrivateRoute>
+                            <Monitoring />
                         </PrivateRoute>
                     }
                 />
