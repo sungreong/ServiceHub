@@ -25,6 +25,8 @@ import uvicorn
 
 # 환경변수에서 도메인 가져오기 (기본값 gmail.com)
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "gmail.com")
+ADMIN_ID = os.getenv("ADMIN_ID", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin$01")
 
 app = FastAPI()
 
@@ -178,9 +180,12 @@ def create_initial_admin():
     db = SessionLocal()
     try:
         # 관리자 계정이 이미 존재하는지 확인
-        admin = db.query(models.User).filter(models.User.email == f"admin@{ALLOWED_DOMAIN}").first()
+
+        admin = db.query(models.User).filter(models.User.email == f"{ADMIN_ID}@{ALLOWED_DOMAIN}").first()
         if not admin:
-            admin_user = schemas.UserCreate(email=f"admin@{ALLOWED_DOMAIN}", password="admin$01", is_admin=True)
+            admin_user = schemas.UserCreate(
+                email=f"{ADMIN_ID}@{ALLOWED_DOMAIN}", password=ADMIN_PASSWORD, is_admin=True
+            )
             auth.create_user(
                 db=db,
                 user=admin_user,
@@ -246,51 +251,51 @@ def create_test_data():
 
         # 3. 테스트 FAQ 데이터 생성
         test_faqs = [
-            {
-                "id": "faq1",
-                "title": "서비스 포털 이용 방법",
-                "content": "서비스 포털은 운영자가 등록한 API 서비스에 접근할 수 있는 플랫폼입니다. 로그인 후 대시보드에서 원하는 서비스를 선택하여 이용할 수 있습니다.",
-                "category": "일반",
-                "is_published": True,
-                "author": "관리자",
-                "author_id": f"admin@{ALLOWED_DOMAIN}",
-                "post_type": models.PostType.FAQ,
-                "status": models.FaqStatus.NOT_APPLICABLE,
-            },
-            {
-                "id": "faq2",
-                "title": "계정 생성 방법",
-                "content": "계정 생성은 회원가입 페이지에서 이메일(@gmail.com)과 비밀번호를 입력하여 진행할 수 있습니다. 추가 정보를 입력하고 가입 버튼을 클릭하면 완료됩니다.",
-                "category": "계정",
-                "is_published": True,
-                "author": "관리자",
-                "author_id": f"admin@{ALLOWED_DOMAIN}",
-                "post_type": models.PostType.FAQ,
-                "status": models.FaqStatus.NOT_APPLICABLE,
-            },
-            {
-                "id": "notice1",
-                "title": "시스템 점검 안내",
-                "content": "2023년 6월 15일 오전 2시부터 6시까지 정기 시스템 점검이 예정되어 있습니다. 해당 시간에는 서비스 이용이 제한될 수 있습니다.",
-                "category": "일반",
-                "is_published": True,
-                "author": "시스템 관리자",
-                "author_id": f"admin@{ALLOWED_DOMAIN}",
-                "post_type": models.PostType.NOTICE,
-                "status": models.FaqStatus.NOT_APPLICABLE,
-            },
-            {
-                "id": "inquiry1",
-                "title": "서비스 접근 권한 문의",
-                "content": "서비스에 접근할 수 있는 권한을 어떻게 얻을 수 있나요?",
-                "category": "권한",
-                "is_published": True,
-                "author": "테스트 사용자",
-                "author_id": f"test1@{ALLOWED_DOMAIN}",
-                "post_type": models.PostType.INQUIRY,
-                "status": models.FaqStatus.COMPLETED,
-                "response": "서비스 이용을 원하시면 대시보드에서 해당 서비스의 '권한 요청' 버튼을 클릭하시면 됩니다. 관리자 승인 후 이용하실 수 있습니다.",
-            },
+            # {
+            #     "id": "faq1",
+            #     "title": "서비스 포털 이용 방법",
+            #     "content": "서비스 포털은 운영자가 등록한 API 서비스에 접근할 수 있는 플랫폼입니다. 로그인 후 대시보드에서 원하는 서비스를 선택하여 이용할 수 있습니다.",
+            #     "category": "일반",
+            #     "is_published": True,
+            #     "author": "관리자",
+            #     "author_id": f"{ADMIN_ID}@{ALLOWED_DOMAIN}",
+            #     "post_type": models.PostType.FAQ,
+            #     "status": models.FaqStatus.NOT_APPLICABLE,
+            # },
+            # {
+            #     "id": "faq2",
+            #     "title": "계정 생성 방법",
+            #     "content": "계정 생성은 회원가입 페이지에서 이메일(@gmail.com)과 비밀번호를 입력하여 진행할 수 있습니다. 추가 정보를 입력하고 가입 버튼을 클릭하면 완료됩니다.",
+            #     "category": "계정",
+            #     "is_published": True,
+            #     "author": "관리자",
+            #     "author_id": f"{ADMIN_ID}@{ALLOWED_DOMAIN}",
+            #     "post_type": models.PostType.FAQ,
+            #     "status": models.FaqStatus.NOT_APPLICABLE,
+            # },
+            # {
+            #     "id": "notice1",
+            #     "title": "시스템 점검 안내",
+            #     "content": "2023년 6월 15일 오전 2시부터 6시까지 정기 시스템 점검이 예정되어 있습니다. 해당 시간에는 서비스 이용이 제한될 수 있습니다.",
+            #     "category": "일반",
+            #     "is_published": True,
+            #     "author": "시스템 관리자",
+            #     "author_id": f"{ADMIN_ID}@{ALLOWED_DOMAIN}",
+            #     "post_type": models.PostType.NOTICE,
+            #     "status": models.FaqStatus.NOT_APPLICABLE,
+            # },
+            # {
+            #     "id": "inquiry1",
+            #     "title": "서비스 접근 권한 문의",
+            #     "content": "서비스에 접근할 수 있는 권한을 어떻게 얻을 수 있나요?",
+            #     "category": "권한",
+            #     "is_published": True,
+            #     "author": "테스트 사용자",
+            #     "author_id": f"{ADMIN_ID}@{ALLOWED_DOMAIN}",
+            #     "post_type": models.PostType.INQUIRY,
+            #     "status": models.FaqStatus.COMPLETED,
+            #     "response": "서비스 이용을 원하시면 대시보드에서 해당 서비스의 '권한 요청' 버튼을 클릭하시면 됩니다. 관리자 승인 후 이용하실 수 있습니다.",
+            # },
         ]
 
         for faq_data in test_faqs:
